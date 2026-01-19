@@ -81,8 +81,8 @@ MODEL_ARGS=(
    --rollout-num-gpus-per-engine 1
    --sglang-mem-fraction-static 0.9
    --sglang-page-size 64
-   --sglang-enable-hierarchical-cache
-   --sglang-hicache-size 300
+   #--sglang-enable-hierarchical-cache
+   --sglang-hicache-size 200
    --sglang-hicache-io-backend kernel
    --sglang-hicache-write-policy write_through
 

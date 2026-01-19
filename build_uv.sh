@@ -1,11 +1,13 @@
 uv pip install nvtx cuda-python==13.1.0
-uv pip install torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 --index-url https://download.pytorch.org/whl/cu128
-
+uv pip install torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 torch-c-dlpack-ext --index-url https://download.pytorch.org/whl/cu128
 git clone https://github.com/TideDra/sglang.git
 cd sglang
 #checkout to branch "dev"
 git checkout slime_0.5.7
 uv pip install -e "python"
+uv pip install maturin[patchelf]
+cd sgl-model-gateway/bindings/python
+maturin develop --features vendored-openssl
 cd ..
 
 uv pip install cmake ninja wheel
