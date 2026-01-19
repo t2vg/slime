@@ -9,6 +9,7 @@ from agent_core.protocol import TaskInput, EndpointConfig, ModelConfig, FinishRe
 from agent_core import SQLiteSession
 from agent_core.verifiers import GeneralQAVerifier
 import aiohttp
+import asyncio
 import uuid
 
 
@@ -30,15 +31,15 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     session_id = None
     if sample.status == Sample.Status.ABORTED:
         #resume from session
-        assert 'traj_id' in sample.metadata, "Traj id is not in metadata"
-        session_id = sample.metadata['session_id']
-        session = SQLiteSession(session_id)
-        history = await session.get_items()
-        assert len(history) > 0, "Session history is empty"
-        assert history[-1].get('role') != 'assistant', "Last message is from assistant"
-        session.close()
-        # Trajectory will resume from session history
-        query = []
+        if 'traj_id' in sample.metadata:
+            session_id = sample.metadata['session_id']
+            session = SQLiteSession(session_id)
+            history = await session.get_items()
+            if len(history) > 0:
+                assert history[-1].get('role') != 'assistant', "Last message is from assistant"
+                # Trajectory will resume from session history
+                query = []
+            session.close()
     
     traj_id = sample.metadata.get('traj_id', uuid.uuid4().hex)
     
@@ -127,9 +128,12 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         sample.status = Sample.Status.COMPLETED
         #clean cache
         await clear_cache()
-    elif result.metadata.finish_reason == FinishReason.ABORTED:
+    elif result.metadata.finish_reason in [FinishReason.ABORTED, FinishReason.INTERNAL_ERROR]:
         sample.status = Sample.Status.ABORTED
         sample.metadata['traj_id'] = traj_id
         sample.metadata['session_id'] = session_id
+        #Only when state.aborted is True, the sample will be collected into the data buffer
+        while not state.aborted:
+            await asyncio.sleep(1)
 
     return sample

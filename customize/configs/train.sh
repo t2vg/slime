@@ -18,7 +18,8 @@ set -ex
 
 # will prevent ray from buffering stdout/stderr
 export PYTHONBUFFERED=16
-export BASE_DIR=$(pwd)
+export FLASHINFER_WORKSPACE_BASE="/workspace/gongrui"
+BASE_DIR=$(pwd)
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
@@ -30,16 +31,16 @@ echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/qwen3-4b-8k.sh"
+source "${SCRIPT_DIR}/models/qwen3-4b-64k.sh"
 
 
 EXP_NAME="test"
 
-
+GPU_NUM=8
 
 CKPT_ARGS=(
-   --hf-checkpoint $BASE_DIR/ckpts/Qwen3-4B-Instruct-2507
-   --ref-load $BASE_DIR/ckpts/Qwen3-4B-Instruct-2507_torch_dist
+   --hf-checkpoint $BASE_DIR/ckpts/qwen4bthinking_sft_tongyi20k_lr2e5_bs512_ep5
+   --ref-load $BASE_DIR/ckpts/qwen4bthinking_sft_tongyi20k_lr2e5_bs512_ep5_torch_dist
    --load $BASE_DIR/ckpts/$EXP_NAME
    --save $BASE_DIR/ckpts/$EXP_NAME
    --save-interval 20
@@ -47,7 +48,7 @@ CKPT_ARGS=(
 
 
 ROLLOUT_ARGS=(
-   --prompt-data $BASE_DIR/data/tongyi_RLmixMR_pass11_partial.jsonl
+   --prompt-data $BASE_DIR/data/sft_qa_35k.jsonl
    --input-key question
    --label-key answer
    --rollout-shuffle
@@ -65,10 +66,12 @@ ROLLOUT_ARGS=(
 
    --custom-config-path $BASE_DIR/customize/configs/agent/tongyi_dr.yaml
    --custom-generate-function-path customize.rollout.agent_core_gen.generate
+   --partial-rollout
 )
 
 
 EVAL_ARGS=(
+   --skip-eval-before-train
    --eval-interval 50
    --eval-prompt-data bc300 $BASE_DIR/data/browsecomp_300.jsonl
    --n-samples-per-eval-prompt 1
@@ -77,7 +80,7 @@ EVAL_ARGS=(
 
 
 ALG_ARGS=(
-   --advantage-estimator grpo
+   --advantage-estimator gspo
    --use-kl-loss
    --kl-loss-coef 0.00
    --kl-loss-type low_var_kl
@@ -124,7 +127,7 @@ MISC_ARGS=(
 
 # launch the master node of ray in container
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 4 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus $GPU_NUM --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 
 # Build the runtime environment JSON with proper variable substitution
@@ -141,7 +144,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 4 \
+   --actor-num-gpus-per-node $GPU_NUM \
    --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \

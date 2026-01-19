@@ -17,11 +17,11 @@ MODEL_ARGS=(
 
 
    # rollout
-   --rollout-max-response-len 8192
+   --rollout-max-response-len 64000
 
 
    # perf
-   --tensor-model-parallel-size 2
+   --tensor-model-parallel-size 1
    --sequence-parallel
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
@@ -36,12 +36,12 @@ MODEL_ARGS=(
 
    # --micro-batch-size 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 9216
+   --max-tokens-per-gpu 20480
 
 
 
    #sglang
-   --rollout-num-gpus-per-engine 2
+   --rollout-num-gpus-per-engine 1
    --sglang-page-size 64
    #--sglang-enable-hierarchical-cache
    --sglang-hicache-size 100
