@@ -15,10 +15,12 @@ pkill -9 redis
 
 set -ex
 
+ulimit -n 1048576
 
 # will prevent ray from buffering stdout/stderr
 export PYTHONBUFFERED=16
 export FLASHINFER_WORKSPACE_BASE="/workspace/gongrui"
+rm /tmp/agent_core_session.db
 BASE_DIR=$(pwd)
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
@@ -53,14 +55,14 @@ ROLLOUT_ARGS=(
    --label-key answer
    --rollout-shuffle
    --num-rollout 300
-   --rollout-batch-size 32
-   --n-samples-per-prompt 4
+   --rollout-batch-size 128
+   --n-samples-per-prompt 8
    --rollout-temperature 1
-   --sglang-server-concurrency 512
-   --over-sampling-batch-size 48
+   --sglang-server-concurrency 64 # Total concurrency = server_concurrency * sglang_dp_size
+   --over-sampling-batch-size 256
 
 
-   --global-batch-size 128
+   --num-steps-per-rollout 1
    --balance-data
 
 
@@ -80,7 +82,7 @@ EVAL_ARGS=(
 
 
 ALG_ARGS=(
-   --advantage-estimator gspo
+   --advantage-estimator grpo
    --use-kl-loss
    --kl-loss-coef 0.00
    --kl-loss-type low_var_kl
@@ -107,9 +109,9 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    #--use-wandb
-   # --wandb-project slime-dev
-   # --wandb-group qwen3-30B-A3B-test
-   # --wandb-key ${WANDB_KEY}
+   --wandb-project slime-dev
+   --wandb-group qwen4b-thinking-sft-tongyi20k-lr2e5-bs512-ep5
+   --wandb-key 9aeddea3b60542704fd5cd44d4c4a1d1d911ce54
 )
 
 MISC_ARGS=(
@@ -121,7 +123,7 @@ MISC_ARGS=(
    --attention-softmax-in-fp32
    # need to comment this when using model with MLA
    --attention-backend flash
-   --router-retry-max-retries 1
+   #--router-retry-max-retries 1
    --sglang-tool-call-parser qwen
 )
 
