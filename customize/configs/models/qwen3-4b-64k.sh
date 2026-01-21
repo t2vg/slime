@@ -24,7 +24,7 @@ MODEL_ARGS=(
    --tensor-model-parallel-size 1
    --sequence-parallel
    --pipeline-model-parallel-size 1
-   --context-parallel-size 1
+   --context-parallel-size 2
    --expert-model-parallel-size 1
    --expert-tensor-parallel-size 1
 
@@ -34,17 +34,17 @@ MODEL_ARGS=(
    --recompute-num-layers 1
 
 
-   # --micro-batch-size 1
+   #--micro-batch-size 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 20480
+   --max-tokens-per-gpu 32000
 
 
 
    #sglang
    --rollout-num-gpus-per-engine 1
    --sglang-page-size 64
-   #--sglang-enable-hierarchical-cache
-   --sglang-hicache-size 100
+   --sglang-enable-hierarchical-cache
+   --sglang-hicache-size 250
    --sglang-hicache-io-backend kernel
    --sglang-hicache-write-policy write_through
 )
