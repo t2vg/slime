@@ -1,0 +1,30 @@
+agent_core_config:
+  endpoint_cfg:
+    api_key: sk-test
+    base_url:
+    - http://localhost:30000
+    mode: response
+    model: default
+  model_cfg:
+    extra_body: null
+    max_context_length: null
+    max_turns: null
+    reasoning: null
+    system_prompt: null
+    temperature: null
+    top_p: null
+  tools:
+  - name: tongyi_search
+    optional_args:
+      max_num_results: 5
+      provider: google
+      retry_num: 10
+      timeout: 300
+  - name: tongyi_visit
+    optional_args:
+      timeout: 120
+  workflow:
+    name: react_ctx_lim
+    workflow_args:
+      return_invalid_toolcall: false
+      verify: true

@@ -20,7 +20,7 @@ ulimit -n 1048576
 # will prevent ray from buffering stdout/stderr
 export PYTHONBUFFERED=16
 export FLASHINFER_WORKSPACE_BASE="/workspace/gongrui"
-rm /tmp/agent_core_session.db
+rm -f /tmp/agent_core_session.sqlite
 BASE_DIR=$(pwd)
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
@@ -33,12 +33,12 @@ echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/qwen3-4b-64k.sh"
+source "${SCRIPT_DIR}/models/qwen3-4b-8k.sh"
 
 
 EXP_NAME="test"
 
-GPU_NUM=8
+GPU_NUM=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 
 CKPT_ARGS=(
    --hf-checkpoint $BASE_DIR/ckpts/qwen4bthinking_sft_tongyi20k_lr2e5_bs512_ep5
@@ -65,8 +65,10 @@ ROLLOUT_ARGS=(
    --num-steps-per-rollout 1
    --balance-data
 
+   --dynamic-sampling-filter-path customize.filters.drop_invalid_samples.validate_samples
+   --rollout-all-samples-process-path customize.filters.drop_invalid_samples.log_all_samples
 
-   --custom-config-path $BASE_DIR/customize/configs/agent/tongyi_dr.yaml
+   --custom-config-path $BASE_DIR/customize/configs/agent/tongyi_react.yaml
    --custom-generate-function-path customize.rollout.agent_core_gen.generate
    --partial-rollout
 )
