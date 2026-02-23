@@ -10,7 +10,7 @@ pkill -9 python
 sleep 3
 pkill -9 ray
 pkill -9 python
-pkill -9 redis
+
 
 
 set -ex
@@ -33,7 +33,7 @@ echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/qwen3-4b-8k.sh"
+source "${SCRIPT_DIR}/models/tongyi_dr.sh"
 
 
 EXP_NAME="test"
@@ -41,25 +41,25 @@ EXP_NAME="test"
 GPU_NUM=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 
 CKPT_ARGS=(
-   --hf-checkpoint $BASE_DIR/ckpts/qwen4bthinking_sft_tongyi20k_lr2e5_bs512_ep5
-   --ref-load $BASE_DIR/ckpts/qwen4bthinking_sft_tongyi20k_lr2e5_bs512_ep5_torch_dist
+   --hf-checkpoint $BASE_DIR/ckpts/RE-TRAC-30B-A3B
+   --ref-load $BASE_DIR/ckpts/RE-TRAC-30B-A3B_torch_dist
    --load $BASE_DIR/ckpts/$EXP_NAME
    --save $BASE_DIR/ckpts/$EXP_NAME
-   --save-interval 20
+   --save-interval 10
 )
 
 
 ROLLOUT_ARGS=(
-   --prompt-data $BASE_DIR/data/sft_qa_35k.jsonl
+   --prompt-data $BASE_DIR/data/web_47k_nosft.jsonl
    --input-key question
    --label-key answer
    --rollout-shuffle
    --num-rollout 300
-   --rollout-batch-size 128
-   --n-samples-per-prompt 8
+   --rollout-batch-size 32
+   --n-samples-per-prompt 16
    --rollout-temperature 1
-   --sglang-server-concurrency 64 # Total concurrency = server_concurrency * sglang_dp_size
-   --over-sampling-batch-size 256
+   --sglang-server-concurrency 48 # Total concurrency = server_concurrency * sglang_dp_size
+   --over-sampling-batch-size 64
 
 
    --num-steps-per-rollout 1
@@ -76,7 +76,7 @@ ROLLOUT_ARGS=(
 
 EVAL_ARGS=(
    --skip-eval-before-train
-   --eval-interval 50
+   --eval-interval 10
    --eval-prompt-data bc300 $BASE_DIR/data/browsecomp_300.jsonl
    --n-samples-per-eval-prompt 1
    --eval-max-response-len 64000
@@ -85,12 +85,12 @@ EVAL_ARGS=(
 
 ALG_ARGS=(
    --advantage-estimator grpo
-   --use-kl-loss
    --kl-loss-coef 0.00
    --kl-loss-type low_var_kl
    --entropy-coef 0.00
    --eps-clip 0.2
    --eps-clip-high 0.28
+   --use-tis
 )
 
 
@@ -110,9 +110,9 @@ OPTIMIZER_ARGS=(
 
 
 WANDB_ARGS=(
-   #--use-wandb
+   --use-wandb
    --wandb-project slime-dev
-   --wandb-group qwen4b-thinking-sft-tongyi20k-lr2e5-bs512-ep5
+   --wandb-group retrac-30b
    --wandb-key 9aeddea3b60542704fd5cd44d4c4a1d1d911ce54
 )
 
