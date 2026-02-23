@@ -86,6 +86,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
                 traj = await response.json()
         token_ids:list[int] = traj["token_ids"]
         output_token_mask:list[int] = traj["output_token_mask"]
+        token_logprobs:list[float] = traj["token_logprobs"]
         assert len(token_ids) == len(output_token_mask), "Token ids and output token mask should have the same length"
         reward = result.metadata.metrics.get("score", 0.0)
 
@@ -101,9 +102,13 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
             logger.warning(f"No response tokens found in trajectory {traj_id}, all masks are zero")
             sample.loss_mask = []
             sample.response_length = 0
+            if args.use_tis:
+                sample.rollout_log_probs = []
         else:
             sample.response_length = len(token_ids) - first_response_idx
             sample.loss_mask = output_token_mask[first_response_idx:]
+            if args.use_tis:
+                sample.rollout_log_probs = token_logprobs[first_response_idx:]
         
         assert len(sample.loss_mask) == sample.response_length, \
             f"loss_mask length {len(sample.loss_mask)} != response_length {sample.response_length}"
