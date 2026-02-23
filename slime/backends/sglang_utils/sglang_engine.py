@@ -306,6 +306,7 @@ class SGLangEngine(RayActor):
             except NewConnectionError as e:
                 raise e
             except Exception as e:
+                requests.post(f"http://{self.server_host}:{self.server_port}/abort_request", json={"abort_all": True})
                 logger.info(f"Error flushing cache: {e}")
                 time.sleep(1)
                 continue
