@@ -36,7 +36,7 @@ MODEL_ARGS=(
 
    #--micro-batch-size 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 32000
+   --max-tokens-per-gpu 64000
 
 
 
