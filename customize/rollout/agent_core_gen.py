@@ -87,11 +87,13 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         token_ids:list[int] = traj["token_ids"]
         output_token_mask:list[int] = traj["output_token_mask"]
         token_logprobs:list[float] = traj["token_logprobs"]
+        traj = traj['trajectory']
         assert len(token_ids) == len(output_token_mask), "Token ids and output token mask should have the same length"
         reward = result.metadata.metrics.get("score", 0.0)
 
         sample.tokens = token_ids
         sample.response = state.tokenizer.decode(token_ids, skip_special_tokens=False)
+        sample.metadata["traj"] = traj
         #sample.response = result.traj
         try:
             first_response_idx = output_token_mask.index(1)
