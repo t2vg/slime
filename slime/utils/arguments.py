@@ -977,6 +977,12 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 help="Enable on-policy distillation (OPD). Must specify --opd-type when enabled.",
             )
             parser.add_argument(
+                "--use-topd",
+                action="store_true",
+                default=False,
+            )
+
+            parser.add_argument(
                 "--opd-type",
                 type=str,
                 choices=["sglang", "megatron"],
@@ -1004,6 +1010,12 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--opd-teacher-ckpt-step", type=int, default=None, help="The checkpoint step for OPD teacher model."
+            )
+            parser.add_argument(
+                "--teacher-tokenizer-path",
+                type=str,
+                default=None,
+                help="The path to the tokenizer for OPD teacher model.",
             )
             return parser
 
