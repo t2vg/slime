@@ -1,15 +1,19 @@
 uv pip install nvtx cuda-python==13.1.0
-uv pip install torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 torch-c-dlpack-ext --index-url https://download.pytorch.org/whl/cu128
+uv pip install torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 --index-url https://download.pytorch.org/whl/cu129
+uv pip install torch-c-dlpack-ext
 git clone https://github.com/TideDra/sglang.git
 cd sglang
 #checkout to branch "dev"
 git checkout slime_0.5.7
 uv pip install -e "python"
-uv pip install maturin[patchelf]
-cd sgl-model-gateway/bindings/python
-maturin develop --features vendored-openssl
+wget https://github.com/TideDra/sglang/releases/download/slime_0.5.7/sglang_router-0.3.0-cp38-abi3-manylinux_2_39_x86_64.whl
+uv pip install sglang_router-0.3.0-cp38-abi3-manylinux_2_39_x86_64.whl
 cd ..
 
+git clone https://github.com/t2vg/inference.git
+cd inference/backend/agent_core/
+uv pip install -e .
+cd -
 uv pip install cmake ninja wheel
 
 MAX_JOBS=64 uv pip -v install flash-attn==2.7.4.post1 --no-build-isolation
