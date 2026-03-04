@@ -1,0 +1,1 @@
+python3 -m sglang_router.launch_server --model-path ckpts/GLM-4.7-FP8 --host 0.0.0.0 --port 30001 --tp 8 --mem-fraction-static 0.8 --chunked-prefill-size 4096 --max-running-requests 20
