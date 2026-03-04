@@ -533,6 +533,8 @@ async def eval_rollout_single_dataset(
         pbar.update(1)
     pbar.close()
 
+    data = [sample for sample in data if sample.status != Sample.Status.FAILED]
+
     data.sort(key=lambda sample: sample.index)
 
     reward_key = args.eval_reward_key or args.reward_key
