@@ -54,7 +54,7 @@ MODEL_ARGS=(
 
 
    # rollout
-   --rollout-max-response-len 64000
+   --rollout-max-response-len 32000
 
 
    # perf

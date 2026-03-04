@@ -7,8 +7,9 @@ from agent_core.runner import execute_task
 from agent_core.utils import clear_task_cache
 from agent_core.protocol import TaskInput, FinishReason, AIMessage
 from agent_core.config import set_error_info_depth, set_sqlite_path
-import aiohttp
+import requests
 import asyncio
+import traceback
 from copy import deepcopy
 
 set_error_info_depth(1)
@@ -21,6 +22,13 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     state = GenerateState(args)
 
     if sample.status == Sample.Status.COMPLETED:
+        return sample
+
+    if sample.status == Sample.Status.ABORTED and sample.tokens:
+        sample.status = Sample.Status.COMPLETED
+        return sample
+    
+    if sample.status == Sample.Status.FAILED:
         return sample
 
     config = deepcopy(args.agent_core_config)
@@ -60,8 +68,14 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     
     abort_trigger = asyncio.create_task(trigger_abort())
 
-    result = await task
-    abort_trigger.cancel()
+    try:
+        result = await asyncio.wait_for(task, timeout=3600)
+    except Exception as e:
+        logger.warning(f"Unexpected error in rollout: {e}")
+        sample.status = Sample.Status.FAILED
+        return sample
+    finally:
+        abort_trigger.cancel()
 
 
     async def clear_cache():
@@ -69,10 +83,13 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         first_ai_message = next(msg for msg in traj if isinstance(msg, AIMessage))
         #sglang removes all chained cache after the first AI message
         root_id = first_ai_message.response_metadata["id"]
-        async with aiohttp.ClientSession() as session:
-            async with session.delete(f"{sglang_endpoint}/trajectory/{root_id}") as response:
-                response.raise_for_status()
-        await clear_task_cache(task_input)
+        response = requests.delete(f"{sglang_endpoint}/trajectory/{root_id}", timeout=60)
+        if not response.ok:
+            logger.warning(f"Failed to clear traj cache: {response.text}")
+        try:
+            await asyncio.wait_for(clear_task_cache(task_input), timeout=1800)
+        except Exception as e:
+            logger.warning(f"Failed to clear task cache: {traceback.format_exc()}")
 
     if result.metadata.finish_reason not in [FinishReason.COMPLETED, FinishReason.ABORTED]:
         logger.warning(f"Rollout error: {result.metadata.error_info}")
@@ -81,17 +98,19 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         last_message = result.traj[-1]
         assert isinstance(last_message, AIMessage), "Last message should be an AI message"
         traj_id = last_message.response_metadata["id"]
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{sglang_endpoint}/trajectory/{traj_id}") as response:
-                traj = await response.json()
+        response = requests.get(f"{sglang_endpoint}/trajectory/{traj_id}", timeout=60)
+        response.raise_for_status()
+        traj = response.json()
         token_ids:list[int] = traj["token_ids"]
         output_token_mask:list[int] = traj["output_token_mask"]
         token_logprobs:list[float] = traj["token_logprobs"]
+        traj = traj['trajectory']
         assert len(token_ids) == len(output_token_mask), "Token ids and output token mask should have the same length"
         reward = result.metadata.metrics.get("score", 0.0)
 
         sample.tokens = token_ids
         sample.response = state.tokenizer.decode(token_ids, skip_special_tokens=False)
+        sample.metadata["traj"] = traj
         #sample.response = result.traj
         try:
             first_response_idx = output_token_mask.index(1)
@@ -117,11 +136,17 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         sample.status = Sample.Status.COMPLETED
         #clean cache
         await clear_cache()
-    elif result.metadata.finish_reason in [FinishReason.ABORTED, FinishReason.INTERNAL_ERROR]:
-        sample.status = Sample.Status.ABORTED
-        #Only when state.aborted is True, the sample will be collected into the data buffer
-        #This makes sure failed samples are collected into the data buffer.
-        while not state.aborted:
-            await asyncio.sleep(1)
-
+    elif result.metadata.finish_reason in [FinishReason.ABORTED]:
+        if not evaluation:
+            sample.status = Sample.Status.ABORTED
+            #Only when state.aborted is True, the sample will be collected into the data buffer
+            #This makes sure failed samples are collected into the data buffer.
+            while not state.aborted:
+                await asyncio.sleep(1)
+        else:
+            sample.status = Sample.Status.FAILED
+            sample.reward = 0.0
+    elif result.metadata.finish_reason in [FinishReason.INTERNAL_ERROR]:
+        sample.status = Sample.Status.FAILED
+        sample.reward = 0.0
     return sample
