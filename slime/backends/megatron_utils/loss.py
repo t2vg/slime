@@ -396,42 +396,6 @@ def apply_opd_kl_to_advantages(
     # Store reverse KL for logging
     rollout_data["opd_reverse_kl"] = reverse_kls
 
-def apply_topd_kl_to_advantages(
-    args: Namespace,
-    rollout_data: RolloutBatch,
-    advantages: list[torch.Tensor],
-    student_log_probs: list[torch.Tensor] | None,
-) -> None:
-
-
-    teacher_log_probs = rollout_data.get("teacher_log_probs")
-    assert teacher_log_probs is not None
-    loss_masks = rollout_data.get("loss_masks")
-    assert loss_masks is not None
-
-    device = student_log_probs[0].device
-    dtype = student_log_probs[0].dtype
-    teacher_log_probs = [t.to(device=device) for t in teacher_log_probs]
-
-    reverse_kls = []
-    for i, adv in enumerate(advantages):
-        loss_mask = loss_masks[i]
-        assert len(loss_mask) == len(teacher_log_probs[i])
-        assert len(student_log_probs[i]) == len(teacher_log_probs[i])
-        #get spans of consecutive 1s in loss mask
-        padded_mask = torch.tensor([0] + loss_mask.tolist() + [0])
-        diff = padded_mask[1:] - padded_mask[:-1]
-        starts = torch.where(diff == 1)[0]
-        ends = torch.where(diff == -1)[0]
-        student_t_logp = torch.zeros_like(student_log_probs[i], dtype=dtype, device=device)
-        for s,e in zip(starts, ends, strict=True):
-            student_t_logp[s:e] = student_log_probs[i][s:e].mean()
-        reverse_kl = student_t_logp - teacher_log_probs[i]
-        advantages[i] = - args.opd_kl_coef * reverse_kl
-        reverse_kls.append(reverse_kl)
-
-    # Store reverse KL for logging
-    rollout_data["opd_reverse_kl"] = reverse_kls
 
 def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) -> None:
     """Compute advantages and returns in-place based on `args.advantage_estimator`.
@@ -530,14 +494,6 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
     # Apply on-policy distillation KL penalty to advantages (orthogonal to advantage estimator)
     if args.use_opd:
         apply_opd_kl_to_advantages(
-            args=args,
-            rollout_data=rollout_data,
-            advantages=advantages,
-            student_log_probs=log_probs,
-        )
-    
-    if args.use_topd:
-        apply_topd_kl_to_advantages(
             args=args,
             rollout_data=rollout_data,
             advantages=advantages,
