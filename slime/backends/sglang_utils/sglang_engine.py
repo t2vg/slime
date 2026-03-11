@@ -539,6 +539,10 @@ def _compute_server_args(
         kwargs["disaggregation_mode"] = "decode"
         kwargs["prefill_round_robin_balance"] = True
 
+    # Disable multimodal when no multimodal keys are configured
+    if not args.multimodal_keys:
+        kwargs["enable_multimodal"] = False
+
     if args.use_rollout_routing_replay:
         kwargs["enable_return_routed_experts"] = True
     if args.fp16:

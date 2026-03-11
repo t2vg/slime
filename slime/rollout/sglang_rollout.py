@@ -65,6 +65,8 @@ class GenerateState(metaclass=SingletonMeta):
         self.args = args
         self.tokenizer = load_tokenizer(args.hf_checkpoint, trust_remote_code=True)
         self.processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
+        if not args.multimodal_keys:
+            self.processor = None
 
         self.semaphore = asyncio.Semaphore(
             args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
@@ -495,6 +497,8 @@ async def eval_rollout_single_dataset(
     if cache_key not in EVAL_PROMPT_DATASET:
         tokenizer = load_tokenizer(args.hf_checkpoint, trust_remote_code=True)
         processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
+        if not args.multimodal_keys:
+            processor = None
         EVAL_PROMPT_DATASET[cache_key] = Dataset(
             path=dataset_cfg.path,
             tokenizer=tokenizer,

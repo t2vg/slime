@@ -62,6 +62,10 @@ class RolloutDataSource(DataSource):
             tokenizer = load_tokenizer(args.hf_checkpoint, trust_remote_code=True)
             processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
 
+            # Skip multimodal processor when no multimodal keys are configured
+            if not args.multimodal_keys:
+                processor = None
+
             # TODO move (during the refactor)
             if (d := args.dump_details) is not None:
                 tokenizer.save_pretrained(Path(d) / "tokenizer")
