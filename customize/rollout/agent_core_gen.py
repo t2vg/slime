@@ -93,8 +93,12 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
 
     if result.metadata.finish_reason not in [FinishReason.COMPLETED, FinishReason.ABORTED]:
         logger.warning(f"Rollout error: {result.metadata.error_info}")
+    
+    valid_finish_reasons = [FinishReason.COMPLETED]
+    if args.penalize_invalid_tool_args:
+        valid_finish_reasons.append(FinishReason.INVALID_TOOL_ARGS)
 
-    if result.metadata.finish_reason in [FinishReason.COMPLETED, FinishReason.INVALID_TOOL_ARGS, FinishReason.FAILED_TOOL_CALL]:
+    if result.metadata.finish_reason in valid_finish_reasons:
         last_message = result.traj[-1]
         assert isinstance(last_message, AIMessage), "Last message should be an AI message"
         traj_id = last_message.response_metadata["id"]
@@ -111,6 +115,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         sample.tokens = token_ids
         sample.response = state.tokenizer.decode(token_ids, skip_special_tokens=False)
         sample.metadata["traj"] = traj
+        sample.metadata["round_number"] = result.metadata.metrics.get("llm_calls", 0)
         #sample.response = result.traj
         try:
             first_response_idx = output_token_mask.index(1)
@@ -139,6 +144,11 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     elif result.metadata.finish_reason in [FinishReason.ABORTED]:
         if not evaluation:
             sample.status = Sample.Status.ABORTED
+            sample.metadata["staleness"] = sample.metadata.get("staleness", 0) + 1
+            if sample.metadata["staleness"] > args.max_staleness:
+                sample.status = Sample.Status.FAILED
+                sample.reward = 0.0
+                return sample
             #Only when state.aborted is True, the sample will be collected into the data buffer
             #This makes sure failed samples are collected into the data buffer.
             while not state.aborted:
@@ -146,7 +156,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         else:
             sample.status = Sample.Status.FAILED
             sample.reward = 0.0
-    elif result.metadata.finish_reason in [FinishReason.INTERNAL_ERROR]:
+    else:
         sample.status = Sample.Status.FAILED
         sample.reward = 0.0
     return sample
