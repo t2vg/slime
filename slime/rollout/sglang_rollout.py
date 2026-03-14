@@ -366,6 +366,9 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     if args.partial_rollout:
         logger.info(f"Collected {count} partial samples into the data buffer")
 
+    abort_tasks = [post(f"{url}/abort_request", {"abort_all": True}) for url in urls]
+    abort_results = await asyncio.gather(*abort_tasks, return_exceptions=True)
+
     return aborted_samples
 
 

@@ -290,18 +290,21 @@ class SGLangEngine(RayActor):
         if self.node_rank != 0:
             return
         # flush cache will not return status_code 200 when there are pending requests
-        for _ in range(60):
+        for i in range(60):
             try:
                 response = requests.get(f"http://{self.server_host}:{self.server_port}/flush_cache")
                 if response.status_code == 200:
                     break
+                logger.info(f"flush_cache returned {response.status_code}: {response.text}")
             except NewConnectionError as e:
                 raise e
             except Exception as e:
-                requests.post(f"http://{self.server_host}:{self.server_port}/abort_request", json={"abort_all": True})
                 logger.info(f"Error flushing cache: {e}")
-                time.sleep(1)
-                continue
+            requests.post(
+                f"http://{self.server_host}:{self.server_port}/abort_request",
+                json={"abort_all": True},
+            )
+            time.sleep(1)
         else:
             raise TimeoutError("Timeout while flushing cache.")
 

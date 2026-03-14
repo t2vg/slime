@@ -4,7 +4,7 @@ uv pip install torch-c-dlpack-ext
 git clone https://github.com/TideDra/sglang.git
 cd sglang
 #checkout to branch "dev"
-git checkout slime_0.5.7
+git checkout slime_0.5.9
 uv pip install -e "python"
 wget https://github.com/TideDra/sglang/releases/download/slime_0.5.7/sglang_router-0.3.0-cp38-abi3-manylinux_2_39_x86_64.whl
 uv pip install sglang_router-0.3.0-cp38-abi3-manylinux_2_39_x86_64.whl
@@ -37,7 +37,7 @@ git clone https://github.com/NVIDIA/Megatron-LM.git --recursive
 cd Megatron-LM
 git checkout 3714d81d418c9f1bca4594fc35f9e8289f652862
 uv pip install -e .
-git apply $SLIME_DIR/docker/patch/v0.5.7/megatron.patch
+git apply $SLIME_DIR/docker/patch/latest/megatron.patch
 
 cd $SLIME_DIR
 
