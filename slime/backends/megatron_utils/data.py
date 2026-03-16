@@ -436,6 +436,7 @@ def log_rollout_data(
                         "advantages",
                         "values",
                         "teacher_log_probs",
+                        "token_rewards",
                         "opd_reverse_kl",
                     ]:
                         val = torch.cat(val).clone().detach()

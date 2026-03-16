@@ -27,6 +27,8 @@ class Sample:
     rollout_routed_experts: list[list[int]] | None = None  # Routed experts from rollout engine
     remove_sample: bool = False
     teacher_log_probs: list[float] | None = None  # Log probabilities from teacher model for OPD
+    token_rewards: list[float] | None = None  # Rewards for each token
+    customized_metrics: dict[str, float] = field(default_factory=dict)
 
     class Status(Enum):
         PENDING = "pending"
