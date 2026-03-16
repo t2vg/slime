@@ -677,7 +677,7 @@ def policy_loss_function(
         unconcat_tokens=batch["unconcat_tokens"],
         total_lengths=total_lengths,
         response_lengths=response_lengths,
-        with_entropy=True,
+        with_entropy=args.entropy_coef != 0,
         max_seq_lens=max_seq_lens,
     )
 
@@ -790,11 +790,14 @@ def policy_loss_function(
     ppo_kl = sum_of_sample_mean(ppo_kl)
 
     # entropy loss
-    entropy = log_probs_and_entropy["entropy"]
-    entropy = torch.cat(entropy, dim=0)
-    entropy_loss = sum_of_sample_mean(entropy)
-
-    loss = pg_loss - args.entropy_coef * entropy_loss
+    if args.entropy_coef != 0:
+        entropy = log_probs_and_entropy["entropy"]
+        entropy = torch.cat(entropy, dim=0)
+        entropy_loss = sum_of_sample_mean(entropy)
+        loss = pg_loss - args.entropy_coef * entropy_loss
+    else:
+        entropy_loss = torch.zeros_like(pg_loss)
+        loss = pg_loss
 
     if args.use_kl_loss:
         ref_log_probs = batch["ref_log_probs"]
@@ -1021,6 +1024,14 @@ def loss_function(
         loss, log = checkpoint(func, args, batch, logits, sum_of_sample_mean)
     else:
         loss, log = func(args, batch, logits, sum_of_sample_mean)
+
+    # With allgather-CP, some CP ranks may have no loss-contributing tokens (e.g., all
+    # padding). Without this, gradient doesn't flow through their attention path, so
+    # the CP gather's backward (reduce-scatter) is not called, deadlocking other CP
+    # ranks that call it. Adding this zero loss forces autograd to traverse the full
+    # graph on every rank without changing gradient values.
+    if args.allgather_cp and mpu.get_context_parallel_world_size() > 1:
+        loss = loss + 0 * logits.sum()
 
     # Here we need to divide by cp_size because to cancel the multiply in Megatron.
     global_batch_size = batch.get("dynamic_global_batch_size", args.global_batch_size)

@@ -65,6 +65,8 @@ class GenerateState(metaclass=SingletonMeta):
         self.args = args
         self.tokenizer = load_tokenizer(args.hf_checkpoint, trust_remote_code=True)
         self.processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
+        if not args.multimodal_keys:
+            self.processor = None
 
         self.semaphore = asyncio.Semaphore(
             args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
@@ -179,7 +181,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
 
     # Use session_id for consistent hashing routing if router uses consistent_hashing policy
     headers = None
-    if args.sglang_router_policy == "consistent_hashing" and sample.session_id:
+    if getattr(args, "router_policy", None) == "consistent_hashing" and sample.session_id:
         headers = {"X-SMG-Routing-Key": sample.session_id}
 
     output = await post(url, payload, headers=headers)
@@ -364,6 +366,9 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     if args.partial_rollout:
         logger.info(f"Collected {count} partial samples into the data buffer")
 
+    abort_tasks = [post(f"{url}/abort_request", {"abort_all": True}) for url in urls]
+    abort_results = await asyncio.gather(*abort_tasks, return_exceptions=True)
+
     return aborted_samples
 
 
@@ -495,6 +500,8 @@ async def eval_rollout_single_dataset(
     if cache_key not in EVAL_PROMPT_DATASET:
         tokenizer = load_tokenizer(args.hf_checkpoint, trust_remote_code=True)
         processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
+        if not args.multimodal_keys:
+            processor = None
         EVAL_PROMPT_DATASET[cache_key] = Dataset(
             path=dataset_cfg.path,
             tokenizer=tokenizer,
