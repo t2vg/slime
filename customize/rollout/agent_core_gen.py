@@ -11,12 +11,14 @@ import requests
 import asyncio
 import traceback
 from copy import deepcopy
+import torch
 
 set_error_info_depth(1)
 
 logger = logging.getLogger(__name__)
 
 set_sqlite_path("/tmp/agent_core_session.sqlite")
+
 
 async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, Any], evaluation: bool = False) -> Sample:
     state = GenerateState(args)
@@ -111,6 +113,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         traj = traj['trajectory']
         assert len(token_ids) == len(output_token_mask), "Token ids and output token mask should have the same length"
         reward = result.metadata.metrics.get("score", 0.0)
+            
 
         sample.tokens = token_ids
         sample.response = state.tokenizer.decode(token_ids, skip_special_tokens=False)
@@ -126,22 +129,55 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
             logger.warning(f"No response tokens found in trajectory {traj_id}, all masks are zero")
             sample.loss_mask = []
             sample.response_length = 0
-            if args.use_tis:
+            if args.use_tis or args.use_rollout_logprobs:
                 sample.rollout_log_probs = []
         else:
             sample.response_length = len(token_ids) - first_response_idx
             sample.loss_mask = output_token_mask[first_response_idx:]
-            if args.use_tis:
+            if args.use_tis or args.use_rollout_logprobs:
                 sample.rollout_log_probs = token_logprobs[first_response_idx:]
         
         assert len(sample.loss_mask) == sample.response_length, \
             f"loss_mask length {len(sample.loss_mask)} != response_length {sample.response_length}"
+
+        if sample.metadata.get("previous_token_len") is not None and args.mask_offpolicy_in_partial_rollout:
+            previous_token_len = sample.metadata["previous_token_len"]
+            assert previous_token_len <= len(token_ids), "Previous token length should be less than the current token length"
+            valid_token_len = len(token_ids) - previous_token_len
+            loss_mask = torch.tensor(sample.loss_mask)
+            loss_mask[:-valid_token_len] = 0
+            sample.loss_mask = loss_mask.tolist()
+        
+        if result.metadata.finish_reason == FinishReason.INVALID_TOOL_ARGS:
+            response_spans = get_consecutive_span(sample.loss_mask)
+            if len(response_spans) > 1:
+                #Only the last turn that outputs invalid tool args will be penalized
+                last_turn_span = response_spans[-1]
+                loss_mask = torch.zeros(len(sample.loss_mask))
+                loss_mask[last_turn_span[0]:last_turn_span[1]] = 1
+                loss_mask = loss_mask.tolist()
+                assert len(loss_mask) == len(sample.loss_mask), "Loss mask length should be the same"
+                sample.loss_mask = loss_mask
+                reward = args.invalid_tool_args_penalty
+
         
         sample.reward = reward
         sample.status = Sample.Status.COMPLETED
         #clean cache
         await clear_cache()
     elif result.metadata.finish_reason in [FinishReason.ABORTED]:
+        last_ai_message = None
+        for msg in reversed(result.traj):
+            if isinstance(msg, AIMessage):
+                last_ai_message = msg
+                break
+        if last_ai_message is not None and args.mask_offpolicy_in_partial_rollout:
+            traj_id = last_ai_message.response_metadata["id"]
+            response = requests.get(f"{sglang_endpoint}/trajectory/{traj_id}", timeout=60)
+            response.raise_for_status()
+            traj = response.json()
+            output_token_mask = traj["output_token_mask"]
+            sample.metadata["previous_token_len"] = len(output_token_mask)
         if not evaluation:
             sample.status = Sample.Status.ABORTED
             sample.metadata["staleness"] = sample.metadata.get("staleness", 0) + 1
@@ -160,3 +196,12 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         sample.status = Sample.Status.FAILED
         sample.reward = 0.0
     return sample
+
+def get_consecutive_span(arr: list[int]) -> list[tuple[int, int]]:
+    padded_mask = torch.tensor([0] + arr + [0])
+    diff = padded_mask[1:] - padded_mask[:-1]
+    starts = torch.where(diff == 1)[0]
+    ends = torch.where(diff == -1)[0]
+
+    assert len(starts) == len(ends)
+    return list(zip(starts, ends, strict=False))
