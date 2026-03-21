@@ -379,6 +379,7 @@ def get_advantages_and_returns_batch(
     gamma,
     lambd,
     chunked: bool = True,
+    loss_masks_list: list[torch.Tensor] | None = None,
 ):
     """
     Batched GAE with CP support.
@@ -387,6 +388,8 @@ def get_advantages_and_returns_batch(
         response_lengths:  list[int], each sample's response_len
         values_list:       list[Tensor], each shape = [resp_len_i]
         rewards_list:      list[Tensor], same shape
+        loss_masks_list:   list[Tensor] | None, each shape = [resp_len_i].
+                           Consecutive 1-runs define independent stages.
     Output:
         advantages_list:   list[Tensor], each shape = [resp_len_i]
         returns_list:      list[Tensor], same shape
@@ -417,6 +420,7 @@ def get_advantages_and_returns_batch(
                 full_values_list.append(full_v)
                 full_rewards_list.append(full_r)
 
+            # loss_masks_list is already full-length (not CP-sliced), no gather needed
             # full_values_list[i].shape = [total_len_i]
         else:
             full_values_list = values_list
@@ -433,12 +437,20 @@ def get_advantages_and_returns_batch(
             full_values[i, :L] = full_values_list[i][:L]
             full_rewards[i, :L] = full_rewards_list[i][:L]
 
+        full_loss_mask = None
+        if loss_masks_list is not None:
+            full_loss_mask = torch.zeros(B, max_len, device=device, dtype=dtype)
+            for i in range(B):
+                L = response_lengths[i]
+                full_loss_mask[i, :L] = loss_masks_list[i][:L]
+
         if not chunked:
             full_advantages, full_returns = vanilla_gae(
                 rewards=full_rewards,
                 values=full_values,
                 gamma=gamma,
                 lambd=lambd,
+                loss_mask=full_loss_mask,
             )
         else:
             full_advantages, full_returns = chunked_gae(
@@ -446,6 +458,7 @@ def get_advantages_and_returns_batch(
                 values=full_values,
                 gamma=gamma,
                 lambd=lambd,
+                loss_mask=full_loss_mask,
             )
 
         advantages_list = []
@@ -484,6 +497,7 @@ def vanilla_gae(
     values: torch.Tensor,
     gamma: float,
     lambd: float,
+    loss_mask: torch.Tensor | None = None,
 ):
     B, T = rewards.shape
     device = rewards.device
@@ -493,9 +507,19 @@ def vanilla_gae(
     adv_rev = []
 
     for t in reversed(range(T)):
-        next_value = values[:, t + 1] if t < T - 1 else 0.0
+        if t < T - 1:
+            next_value = values[:, t + 1]
+            if loss_mask is not None:
+                next_value = next_value * loss_mask[:, t + 1]
+        else:
+            next_value = 0.0
         delta = rewards[:, t] + gamma * next_value - values[:, t]
-        lastgaelam = delta + gamma * lambd * lastgaelam
+        if loss_mask is not None:
+            delta = delta * loss_mask[:, t]
+            cont = loss_mask[:, t] * loss_mask[:, t + 1] if t < T - 1 else 0.0
+            lastgaelam = delta + gamma * lambd * lastgaelam * cont
+        else:
+            lastgaelam = delta + gamma * lambd * lastgaelam
         adv_rev.append(lastgaelam)
 
     full_advantages = torch.stack(adv_rev[::-1], dim=1)  # [B, max_len]
@@ -509,6 +533,7 @@ def chunked_gae(
     gamma: float,
     lambd: float,
     chunk_size: int = 128,
+    loss_mask: torch.Tensor | None = None,
 ):
     """
     Compute Generalized Advantage Estimation (GAE) using a FlashLinearAttention-
@@ -518,13 +543,19 @@ def chunked_gae(
     This reduces the sequential dependency length from O(T) to O(T / chunk_size),
     while keeping chunk computations fully parallelizable (O(C^2) per chunk).
 
+    When *loss_mask* is provided, consecutive runs of 1s define independent
+    stages.  GAE is computed within each stage; advantages do **not** propagate
+    across stage boundaries.
+
     Args:
         rewards (Tensor): [B, T] reward sequence.
         values (Tensor):  [B, T] value predictions. The next-value of the final
                           step is assumed to be zero (standard PPO convention).
         gamma (float): discount factor.
-        lam (float): GAE lambda.
+        lambd (float): GAE lambda.
         chunk_size (int): sequence chunk length for parallel scan.
+        loss_mask (Tensor | None): [B, T] binary mask.  Consecutive 1-runs are
+                          treated as independent stages.
 
     Returns:
         advantages (Tensor): [B, T] computed advantages.
@@ -541,102 +572,130 @@ def chunked_gae(
     device = rewards.device
     dtype = rewards.dtype
 
-    # -------------------------------------------------------------------------
-    # Build δ_t = r_t + γ * V_{t+1} - V_t   with V_{T} = 0
-    # -------------------------------------------------------------------------
+    # δ_t = r_t + γ * V_{t+1} - V_t   with V_{T} = 0
     next_values = torch.cat(
         [values[:, 1:], torch.zeros(B, 1, device=device, dtype=dtype)],
         dim=1,
     )
+    if loss_mask is not None:
+        # Stage-terminal tokens must see V_{t+1}=0 (like episode boundaries)
+        next_values = next_values * F.pad(loss_mask[:, 1:], (0, 1))
     deltas = rewards + gamma * next_values - values
 
+    if loss_mask is not None:
+        deltas = deltas * loss_mask
+    else:
+        deltas[rewards == 0] = 0.0
+
     # Reformulate backward GAE as a forward scan on the reversed sequence:
-    #   S[i] = Δ[i] + w * S[i - 1],   w = γλ
+    #   S[i] = Δ[i] + g[i] * S[i-1]
+    # where g[i] = γλ when positions i and i-1 are in the same stage, else 0.
     w = gamma * lambd
     deltas_rev = torch.flip(deltas, dims=[1])  # [B, T]
 
-    # -------------------------------------------------------------------------
+    # Build per-position continuation gates in the reversed sequence.
+    # cont[t] = mask[t] * mask[t+1]: advantage propagates from t+1 → t.
+    # After reversal, cont_rev[i] gates the link between reversed pos i and i-1.
+    if loss_mask is not None:
+        cont = F.pad(loss_mask[:, :-1] * loss_mask[:, 1:], (0, 1))  # [B, T]
+        gates_rev = w * torch.flip(cont, dims=[1])  # [B, T]
+    else:
+        gates_rev = None
+
     # Pad to a multiple of chunk_size
-    # -------------------------------------------------------------------------
     if T % chunk_size != 0:
         pad = chunk_size - (T % chunk_size)
         deltas_rev = F.pad(deltas_rev, (0, pad))
+        if gates_rev is not None:
+            gates_rev = F.pad(gates_rev, (0, pad))
     else:
         pad = 0
 
-    B, T_pad = deltas_rev.shape
+    T_pad = deltas_rev.shape[1]
     n_chunks = T_pad // chunk_size
+    C = chunk_size
 
-    deltas_chunks = deltas_rev.view(B, n_chunks, chunk_size)
+    deltas_chunks = deltas_rev.view(B, n_chunks, C)
 
-    # -------------------------------------------------------------------------
-    # Construct the intra-chunk parallel scan kernel M
-    #
-    # For a chunk Δ[0..C-1], we want:
-    #   S_local[t] = sum_{k=0..t} w^(t-k) * Δ[k]
-    #
-    # This is implemented as:
-    #   S_local = Δ @ M
-    #
-    # where:
-    #   M[i, j] = w^(j - i)    if j >= i
-    #             0            otherwise
-    # -------------------------------------------------------------------------
-    idx = torch.arange(chunk_size, device=device)
-    row = idx[:, None]
-    col = idx[None, :]
-    diff = col - row
+    if gates_rev is not None:
+        # ----- Staged path: per-chunk M matrices via segment decomposition -----
+        BN = B * n_chunks
+        g_flat = gates_rev.view(B, n_chunks, C).reshape(BN, C)
 
-    M = torch.zeros(chunk_size, chunk_size, device=device, dtype=dtype)
-    mask = diff >= 0
+        # Intra-chunk boundary: g==0 at local position j>=1 means a stage break
+        # between local positions j-1 and j.  g[:,0] is inter-chunk only.
+        is_boundary = g_flat[:, 1:] == 0  # [BN, C-1]
+        seg_id = torch.cat([
+            torch.zeros(BN, 1, device=device, dtype=torch.long),
+            torch.cumsum(is_boundary.long(), dim=-1),
+        ], dim=-1)  # [BN, C]
 
-    if w == 0.0:
-        M[mask & (diff == 0)] = 1.0
+        # same_seg[b,i,j]: local positions i,j belong to the same stage
+        same_seg = seg_id.unsqueeze(-1) == seg_id.unsqueeze(-2)  # [BN, C, C]
+
+        # w_powers[i,j] = w^(j-i) for j>=i, 0 otherwise  (shared across chunks)
+        idx = torch.arange(C, device=device)
+        diff = idx[None, :] - idx[:, None]  # [C, C]
+        lower = diff >= 0
+        if w == 0.0:
+            w_powers = (diff == 0).to(dtype)
+        else:
+            w_powers = torch.where(lower, w ** diff.to(dtype),
+                                   torch.zeros(1, device=device, dtype=dtype))
+
+        # Per-chunk M = w_powers ⊙ same_seg
+        M_batched = w_powers.unsqueeze(0) * same_seg.to(dtype)  # [BN, C, C]
+
+        deltas_flat = deltas_chunks.reshape(BN, C)
+        S_local_flat = torch.bmm(
+            deltas_flat.unsqueeze(1), M_batched,
+        ).squeeze(1)  # [BN, C]
+        S_local_chunks = S_local_flat.view(B, n_chunks, C)
+
+        # pow_vec for inter-chunk state injection: cumprod of per-position gates
+        pow_vec_chunks = torch.cumprod(g_flat, dim=-1).view(B, n_chunks, C)
     else:
-        M[mask] = w ** diff[mask].to(dtype)
+        # ----- Original constant-w path (no loss_mask) -----
+        idx = torch.arange(C, device=device)
+        diff = idx[None, :] - idx[:, None]
+        M = torch.zeros(C, C, device=device, dtype=dtype)
+        mask = diff >= 0
+        if w == 0.0:
+            M[mask & (diff == 0)] = 1.0
+        else:
+            M[mask] = w ** diff[mask].to(dtype)
 
-    # pow_vec[t] = w^(t+1), used to inject the recurrent state s_prev
-    if w == 0.0:
-        pow_vec = torch.zeros(chunk_size, device=device, dtype=dtype)
-    else:
-        pow_vec = w ** torch.arange(1, chunk_size + 1, device=device, dtype=dtype)
+        if w == 0.0:
+            pow_vec = torch.zeros(C, device=device, dtype=dtype)
+        else:
+            pow_vec = w ** torch.arange(1, C + 1, device=device, dtype=dtype)
 
-    # -------------------------------------------------------------------------
-    # Parallel compute local chunk results (assuming initial state = 0)
-    # -------------------------------------------------------------------------
-    deltas_flat = deltas_chunks.reshape(B * n_chunks, chunk_size)
-    S_local_flat = deltas_flat @ M
-    S_local_chunks = S_local_flat.view(B, n_chunks, chunk_size)
+        deltas_flat = deltas_chunks.reshape(B * n_chunks, C)
+        S_local_flat = deltas_flat @ M
+        S_local_chunks = S_local_flat.view(B, n_chunks, C)
 
-    # Effective length of each chunk (the last chunk may be padded)
+        # Expand shared pow_vec to [B, n_chunks, C] for unified loop below
+        pow_vec_chunks = pow_vec.view(1, 1, C).expand(B, n_chunks, C)
+
+    # Recurrent propagation between chunks
     lengths = [chunk_size] * n_chunks
     if pad > 0:
         lengths[-1] = chunk_size - pad
 
-    # -------------------------------------------------------------------------
-    # Recurrent propagation between chunks
-    #
-    # Each chunk contributes:
-    #   S_global[t] = S_local[t] + w^(t+1) * s_prev
-    #
-    # And updates:
-    #   s_prev = S_global[last_t]
-    # -------------------------------------------------------------------------
     S_rev = deltas_rev.new_zeros(B, T_pad)
     s_prev = torch.zeros(B, device=device, dtype=dtype)
 
     for c in range(n_chunks):
         Lc = lengths[c]
-        start = c * chunk_size
+        start = c * C
         end = start + Lc
 
         S_local = S_local_chunks[:, c, :Lc]
-        S_global = S_local + s_prev.unsqueeze(1) * pow_vec[:Lc]
+        S_global = S_local + s_prev.unsqueeze(1) * pow_vec_chunks[:, c, :Lc]
 
         S_rev[:, start:end] = S_global
-        s_prev = S_global[:, -1]  # state for next chunk
+        s_prev = S_global[:, -1]
 
-    # Remove padding and flip back to original time order
     if pad > 0:
         S_rev = S_rev[:, :T]
 

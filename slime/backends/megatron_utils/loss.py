@@ -397,21 +397,6 @@ def apply_opd_kl_to_advantages(
     rollout_data["opd_reverse_kl"] = reverse_kls
 
 
-def use_customize_rewards_as_advantages(
-    args: Namespace,
-    rollout_data: RolloutBatch,
-    advantages: list[torch.Tensor],
-) -> None:
-
-    token_rewards = rollout_data.get("token_rewards")
-    if token_rewards is None:
-        raise ValueError("Use customize rewards as advantages requires token_rewards, but it is missing.")
-    device = advantages[0].device
-    token_rewards = [t.to(device=device) for t in token_rewards]
-    for i, _ in enumerate(advantages):
-        assert token_rewards[i].shape == advantages[i].shape, f"Token reward and advantage shape mismatch: {token_rewards[i].shape} vs {advantages[i].shape}"
-        advantages[i] = token_rewards[i]
-
     
 
 def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) -> None:
@@ -478,8 +463,13 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
             if cp_rank == 0:
                 k[-1] += reward
             rewards.append(k)
+        if args.use_customize_rewards:
+            rewards = rollout_data.get("token_rewards")
+            if rewards is None:
+                raise ValueError("Use customize rewards requires token_rewards, but it is missing.")
         advantages, returns = get_advantages_and_returns_batch(
-            total_lengths, response_lengths, values, rewards, args.gamma, args.lambd
+            total_lengths, response_lengths, values, rewards, args.gamma, args.lambd,
+            loss_masks_list=loss_masks,
         )
 
     elif args.advantage_estimator == "reinforce_plus_plus":
@@ -515,13 +505,6 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
             rollout_data=rollout_data,
             advantages=advantages,
             student_log_probs=log_probs,
-        )
-    
-    if args.use_customize_rewards_as_advantages:
-        use_customize_rewards_as_advantages(
-            args=args,
-            rollout_data=rollout_data,
-            advantages=advantages,
         )
 
     # TODO: OpenRLHF always does advantages normalization but veRL doesn't seem to do it.

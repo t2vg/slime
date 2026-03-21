@@ -956,10 +956,10 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 help="The threshold for Off-Policy Sequence Masking (OPSM).",
             )
             parser.add_argument(
-                "--use-customize-rewards-as-advantages",
+                "--use-customize-rewards",
                 action="store_true",
                 default=False,
-                help="Whether to use customize rewards as advantages.",
+                help="Whether to use customize rewards.",
             )
 
             return parser
@@ -1783,6 +1783,3 @@ def slime_validate_args(args):
 
     if args.only_train_params_name_list and args.freeze_params_name_list:
         raise ValueError("You can only specify ONE of: --only-train-params-name-list, or --freeze-params-name-list.")
-
-    if args.use_customize_rewards_as_advantages:
-        assert args.normalize_advantages, "Use customize rewards as advantages requires advantage normalization."
