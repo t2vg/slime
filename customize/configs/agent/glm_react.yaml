@@ -1,0 +1,36 @@
+agent_core_config:
+  endpoint_cfg:
+    api_key: sk-test
+    base_url:
+    - http://localhost:30000
+    mode: response
+    model: default
+  model_cfg:
+    extra_body: null
+    max_context_length: null
+    max_turns: null
+    reasoning: null
+    system_prompt: You are a helpful assistant that can use the **search** tool to search the internet and the **open** tool to visit the web pages. You will be given an question and you need to find the answer via multi-turn search and visit.
+    temperature: null
+    top_p: null
+  tools:
+  - name: glm_search
+    optional_args:
+      max_num_results: 5
+      provider: google
+      retry_num: 10
+      timeout: 300
+  - name: glm_open
+    optional_args:
+      timeout: 120
+  workflow:
+    name: react_ctx_lim
+    workflow_args:
+      return_invalid_toolcall: false
+      verify: true
+
+max_staleness: 2
+
+penalize_invalid_tool_args: true
+
+invalid_tool_args_penalty: -0.2
