@@ -7,7 +7,7 @@ agent_core_config:
     model: default
   model_cfg:
     extra_body: null
-    max_context_length: 32000
+    max_context_length: null
     min_max_tokens_per_turn: 3000
     max_turns: null
     reasoning: null
@@ -16,4 +16,15 @@ agent_core_config:
   workflow:
     name: rg
   
-style_reward_factor: 1.0
+reasonable_reward_weight: 1
+
+max_staleness: 3
+
+penalize_invalid_tool_args: false
+
+invalid_tool_args_penalty: -0.2
+
+rm_url: http://172.179.10.5:30000
+
+gamma: 0.99
+lambd: 0.95

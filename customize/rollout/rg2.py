@@ -46,8 +46,7 @@ def rebuild_data_with_new_thoughts(sample: Sample) -> tuple[dict[str, Any], bool
         new_traj.append(t)
     assert idx == len(new_thoughts)
     query['messages'] = new_traj
-    truncated = "</think>" not in new_thoughts[-1].text
-    return query, truncated or last_turn_empty
+    return query, last_turn_empty
 
 def get_consecutive_span(arr: list[int]) -> list[tuple[int, int]]:
     padded_mask = torch.tensor([0] + arr + [0])
@@ -81,15 +80,48 @@ def get_think_content_spans(tokens: torch.Tensor, think_start_id: int, think_end
         spans.append((int(s) + 1, int(e) + 1))
     return spans
 
+def get_im_think_content_spans(
+    tokens: torch.Tensor, im_start_id: int, im_end_id: int,
+    assistant_id: int, role_prefix_len: int,
+) -> list[tuple[int, int]]:
+    """Extract thinking content spans from assistant turns.
+
+    Only considers ``<|im_start|>`` tokens followed by the *assistant* role
+    token, skipping system/user turns.  The role prefix (``assistant\\n``,
+    whose token-length is *role_prefix_len*) is excluded from the returned
+    span so that ``tokens[s:e]`` = pure thinking content + ``<|im_end|>``.
+    """
+    starts = torch.where(tokens == im_start_id)[0]
+    ends = torch.where(tokens == im_end_id)[0]
+    spans = []
+    for s in starts:
+        if tokens[int(s) + 1] != assistant_id:
+            continue
+        candidates = ends[ends > s]
+        if len(candidates) == 0:
+            raise ValueError(
+                f"No <|im_end|> found after <|im_start|> at position {int(s)}"
+            )
+        e = candidates[0]
+        inner_starts = starts[(starts > s) & (starts < e)]
+        if len(inner_starts) > 0:
+            raise ValueError(
+                f"Nested <|im_start|> inside thinking span [{int(s)}, {int(e)}]"
+            )
+        content_start = int(s) + 1 + role_prefix_len
+        spans.append((content_start, int(e) + 1))
+    return spans
+
 def get_tokens_with_new_thoughts(
     sample: Sample, think_start_id: int, think_end_id: int, im_end_id: int, im_start_id: int,
+    assistant_id: int, role_prefix_len: int,
 ) -> tuple[list[int], list[tuple[int, int]], list[tuple[int, int]], list[tuple[int, int]], bool]:
     generated_tokens = torch.tensor(sample.tokens)
     data, last_turn_invalid = rebuild_data_with_new_thoughts(sample)
     tokens_with_new_thoughts = encode_data(data)
     tokens_with_new_thoughts = torch.tensor(tokens_with_new_thoughts)
 
-    gen_spans = get_think_content_spans(generated_tokens, think_start_id, think_end_id, im_end_id)
+    gen_spans = get_im_think_content_spans(generated_tokens, im_start_id, im_end_id, assistant_id, role_prefix_len)
     new_spans = get_think_content_spans(tokens_with_new_thoughts, think_start_id, think_end_id, im_end_id)
 
     if len(gen_spans) != len(new_spans):
@@ -101,10 +133,10 @@ def get_tokens_with_new_thoughts(
     result_spans = []
     offset = 0
     for (gs, ge), (ns, ne) in zip(gen_spans, new_spans, strict=True):
-        gen_content = generated_tokens[gs:ge].tolist()
+        gen_content = generated_tokens[gs:ge - 1].tolist()
         adj_ns = int(ns) + offset
         adj_ne = int(ne) + offset
-        result[adj_ns:adj_ne] = gen_content
+        result[adj_ns:adj_ne - 1] = gen_content
         new_len = int(ge) - int(gs)
         result_spans.append((adj_ns, adj_ns + new_len))
         offset += new_len - (int(ne) - int(ns))
@@ -128,50 +160,13 @@ def get_tokens_with_new_thoughts(
 
     return result, result_spans, action_spans, gen_spans, last_turn_invalid
 
-def calculate_format_reward(sample: Sample, think_start_id: int, think_end_id: int, im_end_id: int) -> tuple[torch.Tensor, torch.Tensor] | None:
-    tokens = torch.tensor(sample.tokens)
-    think_starts = torch.where(tokens == think_start_id)[0]
-    think_ends = torch.where(tokens == think_end_id)[0]
-    im_ends = torch.where(tokens == im_end_id)[0]
 
-    prompt_length = len(sample.tokens) - sample.response_length
-
-    for ts_pos in think_starts:
-        next_im_end_candidates = im_ends[im_ends > ts_pos]
-        if len(next_im_end_candidates) == 0:
-            continue
-        next_im_end = next_im_end_candidates[0]
-        has_think_end = torch.any((think_ends > ts_pos) & (think_ends < next_im_end))
-        if not has_think_end:
-            reasonable_rewards = torch.zeros(sample.response_length)
-            style_reward = torch.zeros(sample.response_length)
-            loss_mask = torch.tensor(sample.loss_mask)
-            im_end_response_idx = int(next_im_end) - prompt_length
-            if 0 <= im_end_response_idx < sample.response_length:
-                style_reward[im_end_response_idx] = -5.0
-                reasonable_rewards[im_end_response_idx] = -5.0
-                loss_mask[im_end_response_idx] = 1
-                if im_end_response_idx+1 < sample.response_length:
-                    loss_mask[im_end_response_idx+1:] = 0
-            #record the invalid format tokens
-            with open(f"/data/gongrui/slime_tmp/invalid_turn_{uuid.uuid4()}.json", "w") as f:
-                json.dump({
-                    "tokens": sample.tokens[ts_pos:next_im_end+1],
-                }, f)
-            sample.loss_mask = loss_mask.tolist()
-            return reasonable_rewards, style_reward
-
-    return None
-
-async def calculate_turn_reward(args: Namespace, sample: Sample, think_start_id: int, think_end_id: int, im_end_id: int, im_start_id: int) -> tuple[torch.Tensor, torch.Tensor]:
+async def calculate_turn_reward(
+    args: Namespace, sample: Sample, think_start_id: int, think_end_id: int,
+    im_end_id: int, im_start_id: int, assistant_id: int, role_prefix_len: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
     rm_endpoint = args.rm_url
-    maybe_format_reward = calculate_format_reward(sample, think_start_id, think_end_id, im_end_id)
-    if maybe_format_reward is not None:
-        sample.customized_metrics["invalid_format_ratio"] = 1
-        return maybe_format_reward
-    else:
-        sample.customized_metrics["invalid_format_ratio"] = 0
-    rebuild_tokens, think_spans, action_spans, sample_think_spans, last_turn_invalid = get_tokens_with_new_thoughts(sample, think_start_id, think_end_id, im_end_id, im_start_id)
+    rebuild_tokens, think_spans, action_spans, sample_think_spans, last_turn_invalid = get_tokens_with_new_thoughts(sample, think_start_id, think_end_id, im_end_id, im_start_id, assistant_id, role_prefix_len)
     payload = {
         "input_ids": rebuild_tokens,
         "sampling_params": {
@@ -210,8 +205,13 @@ async def calculate_turn_reward(args: Namespace, sample: Sample, think_start_id:
             # Mask invalid last turn tokens
             sample.metadata["output_token_mask"][s:e] = 0
             continue
-        reasonable_rewards[e] = math.exp(turn_rewards[i]/10)
-        assert 0<=reasonable_rewards[e]<=1
+        # e-1 is the im_end position
+        assert sample.tokens[e-1] == im_end_id
+        reasonable_rewards[e-1] = math.exp(turn_rewards[i]/10)
+        assert 0<=reasonable_rewards[e-1]<=1
+        # penalize short thinking
+        if e-s <= 20:
+            reasonable_rewards[e-1] = -5
     #reassign loss mask
     sample.loss_mask = sample.metadata["output_token_mask"][-sample.response_length:]
 
@@ -220,8 +220,8 @@ async def calculate_turn_reward(args: Namespace, sample: Sample, think_start_id:
 
     style_reward = torch.zeros(len(sample.tokens))
     for (ts, te), (rs, re) in zip(sample_think_spans, think_spans, strict=True):
-        assert (sample_tokens[ts:te] == rebuild_tokens_tensor[rs:re]).all(), \
-            f"Token mismatch: sample[{ts}:{te}]={sample_tokens[ts:te].tolist()} != rebuild[{rs}:{re}]={rebuild_tokens_tensor[rs:re].tolist()}"
+        assert (sample_tokens[ts:te - 1] == rebuild_tokens_tensor[rs:re - 1]).all(), \
+            f"Token mismatch: sample[{ts}:{te-1}]={sample_tokens[ts:te-1].tolist()} != rebuild[{rs}:{re-1}]={rebuild_tokens_tensor[rs:re-1].tolist()}"
         phi = torch.tensor(rm_log_probs[rs:re]) + torch.tensor(rm_entropy[rs:re])
         style_reward[ts:te] += (torch.sigmoid(phi/10) - 0.5) * 2
 
@@ -245,8 +245,11 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     assert think_end_id is not None
     assert im_end_id is not None
     assert im_start_id is not None
+    role_prefix_tokens = tokenizer.encode("assistant\n", add_special_tokens=False)
+    assistant_id = role_prefix_tokens[0]
+    role_prefix_len = len(role_prefix_tokens)
 
-    calculate_reward_task = asyncio.create_task(calculate_turn_reward(args, sample, think_start_id, think_end_id, im_end_id, im_start_id))
+    calculate_reward_task = asyncio.create_task(calculate_turn_reward(args, sample, think_start_id, think_end_id, im_end_id, im_start_id, assistant_id, role_prefix_len))
     while not calculate_reward_task.done():
         if state.aborted:
             calculate_reward_task.cancel()
@@ -285,13 +288,15 @@ if __name__ == "__main__":
     from unittest.mock import patch, MagicMock
 
     S, E, IM, IMS = 1, 2, 3, 4  # think_start_id, think_end_id, im_end_id, im_start_id
+    A, NL = 5, 6               # assistant token, newline token
+    RPL = 2                     # role_prefix_len: "assistant\n" = 2 tokens (A + NL)
 
     def run_test(generated, new_thoughts, expected_result, expected_contents, expected_actions, label):
         mock_sample = MagicMock()
         mock_sample.tokens = generated
         with patch(f"{__name__}.encode_data", return_value=new_thoughts), \
              patch(f"{__name__}.rebuild_data_with_new_thoughts", return_value=({}, False)):
-            result, spans, action_spans, _gen_spans, _invalid = get_tokens_with_new_thoughts(mock_sample, S, E, IM, IMS)
+            result, spans, action_spans, _gen_spans, _invalid = get_tokens_with_new_thoughts(mock_sample, S, E, IM, IMS, A, RPL)
         assert result == expected_result, f"{label}: result {result} != expected {expected_result}"
         for i, (content, (s, e)) in enumerate(zip(expected_contents, spans, strict=True)):
             assert result[s:e] == content, \
@@ -303,9 +308,9 @@ if __name__ == "__main__":
                 f"{label}: action content mismatch at ({s},{e})"
         print(f"{label}: PASSED")
 
-    # 1: 两段 reasoning，长度不同；非 thinking token 不同；每段 think_end 后有 action 到 im_end
+    # 1: 两段 reasoning，长度不同；每段 IMS 后有 A NL role prefix
     run_test(
-        generated=   [10, S, 100, 101, 102, E, 20, 21, IM, S, 200, 201, E, 30, IM],
+        generated=   [10, IMS, A, NL, 100, 101, 102, IM, 20, 21, IM, IMS, A, NL, 200, 201, IM, 30, IM],
         new_thoughts=[77, S, 300, 301, E, 88, 89, IM, S, 400, 401, 402, 403, E, 99, IM],
         expected_result=[77, S, 100, 101, 102, E, 88, 89, IM, S, 200, 201, E, 99, IM],
         expected_contents=[[100, 101, 102, E], [200, 201, E]],
@@ -315,7 +320,7 @@ if __name__ == "__main__":
 
     # 2: 单段 reasoning，等长替换；think_end 后紧跟 im_end（action 为空 span）
     run_test(
-        generated=   [10, S, 100, 101, E, IM, 20],
+        generated=   [10, IMS, A, NL, 100, 101, IM, IM, 20],
         new_thoughts=[77, S, 300, 301, E, IM, 88],
         expected_result=[77, S, 100, 101, E, IM, 88],
         expected_contents=[[100, 101, E]],
@@ -325,7 +330,7 @@ if __name__ == "__main__":
 
     # 3: 单段 reasoning，generated 更短；有 action token
     run_test(
-        generated=   [10, S, 100, E, 20, 21, 22, IM],
+        generated=   [10, IMS, A, NL, 100, IM, 20, 21, 22, IM],
         new_thoughts=[77, S, 300, 301, 302, E, 88, 89, IM],
         expected_result=[77, S, 100, E, 88, 89, IM],
         expected_contents=[[100, E]],
@@ -335,12 +340,23 @@ if __name__ == "__main__":
 
     # 4: 三段 reasoning；每段后有 action
     run_test(
-        generated=   [S, 10, 11, E, 50, IM, S, 20, E, 60, 61, IM, S, 30, 31, 32, E, 70, IM],
+        generated=   [IMS, A, NL, 10, 11, IM, 50, IM, IMS, A, NL, 20, IM, 60, 61, IM, IMS, A, NL, 30, 31, 32, IM, 70, IM],
         new_thoughts=[S, 40, E, 55, IM, S, 50, 51, E, 65, IM, S, 60, E, 75, 76, IM],
         expected_result=[S, 10, 11, E, 55, IM, S, 20, E, 65, IM, S, 30, 31, 32, E, 75, 76, IM],
         expected_contents=[[10, 11, E], [20, E], [30, 31, 32, E]],
         expected_actions=[(4, 6), (9, 11), (16, 19)],
         label="test_three_spans",
+    )
+
+    # 5: 含 system/user 轮的 im_start 应被过滤，只取 assistant 轮
+    SYS, USR = 7, 8  # system/user role tokens
+    run_test(
+        generated=   [IMS, SYS, 77, 78, IM, IMS, USR, 88, IM, IMS, A, NL, 100, 101, IM, 20, IM],
+        new_thoughts=[77, S, 300, 301, E, 88, 89, IM],
+        expected_result=[77, S, 100, 101, E, 88, 89, IM],
+        expected_contents=[[100, 101, E]],
+        expected_actions=[(5, 8)],
+        label="test_filter_non_assistant",
     )
 
     print("All tests passed.")
