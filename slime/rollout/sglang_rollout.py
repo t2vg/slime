@@ -349,7 +349,13 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     # make sure all the pending tasks are finished
     count = 0
     while state.pendings:
-        done, state.pendings = await asyncio.wait(state.pendings, return_when=asyncio.FIRST_COMPLETED)
+        done, state.pendings = await asyncio.wait(state.pendings, return_when=asyncio.FIRST_COMPLETED, timeout=600)
+        if not done:
+            logger.warning("Timeout waiting for pending tasks to finish")
+            for task in state.pendings:
+                task.cancel()
+            state.pendings = set()
+            break
 
         if not args.partial_rollout:
             continue

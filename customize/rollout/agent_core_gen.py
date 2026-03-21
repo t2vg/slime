@@ -37,7 +37,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     #assert config['workflow']['name'] == "react_ctx_lim"
     sglang_endpoint = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     assert isinstance(sample.prompt, str), "Prompt should be a string"
-    assert sample.label is not None, "Label should not be None"
+    #assert sample.label is not None, "Label should not be None"
     assert (
         sample.status in [Sample.Status.PENDING, Sample.Status.ABORTED, Sample.Status.FAILED]
     ), f"Sample status is {sample.status}"
@@ -71,7 +71,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     abort_trigger = asyncio.create_task(trigger_abort())
 
     try:
-        result = await asyncio.wait_for(task, timeout=3600)
+        result = await asyncio.wait_for(task, timeout=1800)
     except Exception as e:
         logger.warning(f"Unexpected error in rollout: {e}")
         sample.status = Sample.Status.FAILED
