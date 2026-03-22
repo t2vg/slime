@@ -210,7 +210,7 @@ async def calculate_turn_reward(
         reasonable_rewards[e-1] = math.exp(turn_rewards[i]/10)
         assert 0<=reasonable_rewards[e-1]<=1
         # penalize short thinking
-        if e-s <= 20:
+        if e-s <= 100:
             reasonable_rewards[e-1] = -5
     #reassign loss mask
     sample.loss_mask = sample.metadata["output_token_mask"][-sample.response_length:]

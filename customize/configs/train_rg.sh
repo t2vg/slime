@@ -36,7 +36,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/models/qwen3-4b-32k.sh"
 
 
-EXP_NAME="qwen3-4bins_rg_sft_10k_lora_lr2e4_bs128_ep3-ppo_w1"
+EXP_NAME="qwen3-4bins_rg_sft_10k_lora_lr2e4_bs128_ep3-ppo_w1_min100"
 
 GPU_NUM=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 
