@@ -74,7 +74,7 @@ def get_model_provider_func(
             # Apply critic output layer if needed
             if post_process and role == "critic":
                 model.output_layer = LinearForLastLayer(
-                    input_size=model.config.hidden_size, output_size=1, config=model.config
+                    input_size=model.config.hidden_size, output_size=args.critic_num_heads, config=model.config
                 )
             return model
 
@@ -201,7 +201,7 @@ def get_model_provider_func(
             model = GPTModel(**kwargs)
 
         if post_process and role == "critic":
-            model.output_layer = LinearForLastLayer(input_size=config.hidden_size, output_size=1, config=config)
+            model.output_layer = LinearForLastLayer(input_size=config.hidden_size, output_size=args.critic_num_heads, config=config)
 
         return model
 

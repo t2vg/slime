@@ -36,8 +36,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/models/qwen3-4b-32k.sh"
 
 
-EXP_NAME="qwen3-4bins_rg_sft_10k_lora_lr2e4_bs128_ep3-ppo_w1_min100"
-
+EXP_NAME="qwen3-4bins_rg_sft_10k_lora_lr2e4_bs128_ep3-ppo_w0.8_min100max500"
+export WANDB_JOB_NAME=$EXP_NAME
+export WANDB_NAME=$EXP_NAME
 GPU_NUM=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 
 CKPT_ARGS=(
@@ -45,7 +46,7 @@ CKPT_ARGS=(
    --ref-load $BASE_DIR/blob/rg/ckpts/qwen3-4bins_rg_sft_10k_lora_lr2e4_bs128_ep3_torch_dist
    #--load $BASE_DIR/blob/rg/ckpts/$EXP_NAME/actor
    --save $BASE_DIR/blob/rg/ckpts/$EXP_NAME/actor
-   --critic-load $BASE_DIR/blob/rg/ckpts/qwen3-4bins_rg_sft_10k_lora_lr2e4_bs128_ep3-reasonable_critic/critic
+   --critic-load $BASE_DIR/blob/rg/ckpts/qwen3-4bins_rg_sft_10k_lora_lr2e4_bs128_ep3-ppo_w0.5_min100/critic/iter_0000009
    --critic-save $BASE_DIR/blob/rg/ckpts/$EXP_NAME/critic
    --save-interval 10
 )
@@ -95,8 +96,14 @@ ALG_ARGS=(
    --use-customize-rewards
    --normalize-advantages
    --num-critic-only-steps 0
+   --critic-num-heads 2
+   --reasonable-reward-weight 0.8
    --gamma 0.99
-   --lambd 0.9
+   --lambd 0.95
+   --gamma-reasonable 0.99
+   --lambd-reasonable 0.95
+   --gamma-style 0.0
+   --lambd-style 0.0
 )
 
 

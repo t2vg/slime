@@ -448,7 +448,13 @@ def log_rollout_data(
                             qkv_format=args.qkv_format,
                             max_seq_lens=max_seq_lens,
                         )
-                        val = cp_size * sum_of_sample_mean(val) / len(loss_masks)
+                        if val.dim() > 1:
+                            for head_idx in range(val.size(-1)):
+                                head_val = cp_size * sum_of_sample_mean(val[..., head_idx]) / len(loss_masks)
+                                log_dict[f"{key}_head{head_idx}"] = head_val.item()
+                            val = cp_size * sum_of_sample_mean(val.mean(dim=-1)) / len(loss_masks)
+                        else:
+                            val = cp_size * sum_of_sample_mean(val) / len(loss_masks)
                     else:
                         val = torch.cat(val).clone().detach()
                         val = val.mean() * cp_size
@@ -638,15 +644,19 @@ def sync_actor_critic_data(
     handles = []
 
     if not values:
-        values = [torch.empty_like(log_prob) for log_prob in log_probs]
+        num_heads = getattr(args, "critic_num_heads", 1)
+        if num_heads > 1:
+            values = [torch.empty(*log_prob.shape, num_heads, dtype=log_prob.dtype, device=log_prob.device) for log_prob in log_probs]
+        else:
+            values = [torch.empty_like(log_prob) for log_prob in log_probs]
     for value in values:
         handles.append(dist.broadcast(value, src=1, group=group, async_op=True))
 
     if args.kl_coef != 0 or args.use_kl_loss:
         if not log_probs:
-            log_probs = [torch.empty_like(value) for value in values]
+            log_probs = [torch.empty(value.shape[0], dtype=value.dtype, device=value.device) for value in values]
         if not ref_log_probs:
-            ref_log_probs = [torch.empty_like(value) for value in values]
+            ref_log_probs = [torch.empty(value.shape[0], dtype=value.dtype, device=value.device) for value in values]
         for ref_log_prob, log_prob in zip(ref_log_probs, log_probs, strict=False):
             handles.append(dist.broadcast(log_prob, src=0, group=group, async_op=True))
             handles.append(dist.broadcast(ref_log_prob, src=0, group=group, async_op=True))

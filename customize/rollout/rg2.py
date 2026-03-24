@@ -210,7 +210,7 @@ async def calculate_turn_reward(
         reasonable_rewards[e-1] = math.exp(turn_rewards[i]/10)
         assert 0<=reasonable_rewards[e-1]<=1
         # penalize short thinking
-        if e-s <= 100:
+        if e-s <= 100 or e-s >= 500:
             reasonable_rewards[e-1] = -5
     #reassign loss mask
     sample.loss_mask = sample.metadata["output_token_mask"][-sample.response_length:]
@@ -263,13 +263,12 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         logger.warning(f"Error calculating turn reward: {e}\n{traceback.format_exc()}")
         sample.status = Sample.Status.FAILED
         return sample
-    assert 0<=args.reasonable_reward_weight<=1
-    rw = args.reasonable_reward_weight
-    sw = 1 - rw
-    token_rewards = reasonable_rewards * rw + style_reward * sw
+    token_rewards = torch.stack([reasonable_rewards, style_reward], dim=-1)  # [resp_len, 2]
     loss_mask = torch.tensor(sample.loss_mask, dtype=torch.float32)
     loss_mask[style_reward == 0] = 0
     sample.loss_mask = loss_mask.tolist()
+    rw = getattr(args, "reasonable_reward_weight", 1.0)
+    sw = 1 - rw
     avg_reasonable_rewards = reasonable_rewards.sum() / reasonable_rewards.nonzero().numel()
     avg_style_reward = style_reward.sum() / style_reward.nonzero().numel()
     sample.customized_metrics["avg_reasonable_reward"] = avg_reasonable_rewards.item()
