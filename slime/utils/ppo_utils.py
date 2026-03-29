@@ -584,8 +584,6 @@ def chunked_gae(
 
     if loss_mask is not None:
         deltas = deltas * loss_mask
-    else:
-        deltas[rewards == 0] = 0.0
 
     # Reformulate backward GAE as a forward scan on the reversed sequence:
     #   S[i] = Δ[i] + g[i] * S[i-1]

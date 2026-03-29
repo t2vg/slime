@@ -857,6 +857,8 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--lambd-reasonable", type=float, default=None, help="GAE lambda for reasonable reward head (defaults to --lambd)")
             parser.add_argument("--gamma-style", type=float, default=None, help="GAE gamma for style reward head (defaults to --gamma)")
             parser.add_argument("--lambd-style", type=float, default=None, help="GAE lambda for style reward head (defaults to --lambd)")
+            parser.add_argument("--reasonable-temperature", type=float, default=None, help="Temperature for reasonable reward")
+            parser.add_argument("--style-temperature", type=float, default=None, help="Temperature for style reward")
             parser.add_argument("--normalize-advantages", action="store_true", default=False)
             parser.add_argument(
                 "--disable-grpo-std-normalization",

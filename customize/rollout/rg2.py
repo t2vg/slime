@@ -165,7 +165,8 @@ async def calculate_turn_reward(
     args: Namespace, sample: Sample, think_start_id: int, think_end_id: int,
     im_end_id: int, im_start_id: int, assistant_id: int, role_prefix_len: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    rm_endpoint = args.rm_url
+    #rm_endpoint = args.rm_url
+    rm_endpoint = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     rebuild_tokens, think_spans, action_spans, sample_think_spans, last_turn_invalid = get_tokens_with_new_thoughts(sample, think_start_id, think_end_id, im_end_id, im_start_id, assistant_id, role_prefix_len)
     payload = {
         "input_ids": rebuild_tokens,
@@ -207,10 +208,11 @@ async def calculate_turn_reward(
             continue
         # e-1 is the im_end position
         assert sample.tokens[e-1] == im_end_id
-        reasonable_rewards[e-1] = math.exp(turn_rewards[i]/10)
+        assert args.reasonable_temperature is not None
+        reasonable_rewards[e-1] = math.exp(turn_rewards[i]/args.reasonable_temperature)
         assert 0<=reasonable_rewards[e-1]<=1
         # penalize short thinking
-        if e-s <= 100 or e-s >= 500:
+        if e-s <= 100:
             reasonable_rewards[e-1] = -5
     #reassign loss mask
     sample.loss_mask = sample.metadata["output_token_mask"][-sample.response_length:]
@@ -223,7 +225,10 @@ async def calculate_turn_reward(
         assert (sample_tokens[ts:te - 1] == rebuild_tokens_tensor[rs:re - 1]).all(), \
             f"Token mismatch: sample[{ts}:{te-1}]={sample_tokens[ts:te-1].tolist()} != rebuild[{rs}:{re-1}]={rebuild_tokens_tensor[rs:re-1].tolist()}"
         phi = torch.tensor(rm_log_probs[rs:re]) + torch.tensor(rm_entropy[rs:re])
-        style_reward[ts:te] += (torch.sigmoid(phi/10) - 0.5) * 2
+        #style_reward[ts:te] += (torch.sigmoid(phi/10) - 0.5) * 2
+        avg_phi = phi.mean()
+        assert args.style_temperature is not None
+        style_reward[te-1] = torch.tanh(avg_phi/args.style_temperature)
 
     reasonable_rewards = reasonable_rewards[-sample.response_length:]
     style_reward = style_reward[-sample.response_length:]
@@ -264,10 +269,10 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         sample.status = Sample.Status.FAILED
         return sample
     token_rewards = torch.stack([reasonable_rewards, style_reward], dim=-1)  # [resp_len, 2]
-    loss_mask = torch.tensor(sample.loss_mask, dtype=torch.float32)
-    loss_mask[style_reward == 0] = 0
-    sample.loss_mask = loss_mask.tolist()
-    rw = getattr(args, "reasonable_reward_weight", 1.0)
+    #loss_mask = torch.tensor(sample.loss_mask, dtype=torch.float32)
+    #loss_mask[style_reward == 0] = 0
+    #sample.loss_mask = loss_mask.tolist()
+    rw = args.reasonable_reward_weight
     sw = 1 - rw
     avg_reasonable_rewards = reasonable_rewards.sum() / reasonable_rewards.nonzero().numel()
     avg_style_reward = style_reward.sum() / style_reward.nonzero().numel()
