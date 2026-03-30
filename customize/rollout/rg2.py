@@ -161,6 +161,67 @@ def get_tokens_with_new_thoughts(
     return result, result_spans, action_spans, gen_spans, last_turn_invalid
 
 
+def build_baseline_tokens_and_spans(
+    rebuild_tokens: list[int], think_spans: list[tuple[int, int]],
+    think_end_id: int, im_end_id: int, im_start_id: int,
+) -> tuple[list[int], list[tuple[int, int]]]:
+    """Build a token sequence with empty thinking content for baseline logp.
+
+    For each think span, all content tokens are removed and only the
+    ``</think>`` delimiter is kept, yielding ``<think></think>`` structure.
+    Returns the new token list and the corresponding action spans.
+    """
+    result = list(rebuild_tokens)
+    offset = 0
+    for ts, te in think_spans:
+        adj_ts = ts + offset
+        adj_te = te + offset
+        result[adj_ts:adj_te] = [think_end_id]
+        offset -= (te - ts - 1)
+
+    result_tensor = torch.tensor(result)
+    think_end_positions = torch.where(result_tensor == think_end_id)[0]
+    im_end_positions = torch.where(result_tensor == im_end_id)[0]
+    im_start_positions = torch.where(result_tensor == im_start_id)[0]
+
+    baseline_action_spans = []
+    for te_pos in think_end_positions:
+        candidates = im_end_positions[im_end_positions > te_pos]
+        if len(candidates) == 0:
+            raise ValueError(f"No <|im_end|> after </think> at {int(te_pos)} in baseline")
+        ie_pos = candidates[0]
+        if torch.any((im_start_positions > te_pos) & (im_start_positions < ie_pos)):
+            raise ValueError(
+                f"<|im_start|> between </think>@{int(te_pos)} and <|im_end|>@{int(ie_pos)} in baseline"
+            )
+        baseline_action_spans.append((int(te_pos) + 1, int(ie_pos) + 1))
+
+    return result, baseline_action_spans
+
+
+async def _fetch_rm_logprobs(
+    session: aiohttp.ClientSession, rm_endpoint: str, tokens: list[int],
+) -> tuple[list[float | None], list[float | None]]:
+    """Fetch log-probs and entropy from the reward model for a token sequence."""
+    payload = {
+        "input_ids": tokens,
+        "sampling_params": {"temperature": 1, "max_new_tokens": 0, "skip_special_tokens": False},
+        "return_logprob": True,
+        "logprob_start_len": 0,
+        "return_entropy": True,
+    }
+    async with session.post(f"{rm_endpoint}/generate", json=payload) as resp:
+        resp.raise_for_status()
+        rm_resp = await resp.json()
+    log_probs = [i[0] for i in rm_resp["meta_info"]["input_token_logprobs"]]
+    entropy = rm_resp["meta_info"]["input_token_entropy"]
+    assert len(log_probs) == len(tokens)
+    assert len(entropy) == len(tokens)
+    assert log_probs[0] is None
+    assert entropy[0] is None
+    return log_probs, entropy
+
+
 async def calculate_turn_reward(
     args: Namespace, sample: Sample, think_start_id: int, think_end_id: int,
     im_end_id: int, im_start_id: int, assistant_id: int, role_prefix_len: int,
@@ -168,37 +229,33 @@ async def calculate_turn_reward(
     #rm_endpoint = args.rm_url
     rm_endpoint = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     rebuild_tokens, think_spans, action_spans, sample_think_spans, last_turn_invalid = get_tokens_with_new_thoughts(sample, think_start_id, think_end_id, im_end_id, im_start_id, assistant_id, role_prefix_len)
-    payload = {
-        "input_ids": rebuild_tokens,
-        "sampling_params": {
-            "temperature": 0,
-            "max_new_tokens": 0,
-            "skip_special_tokens": False,
-        },
-        "return_logprob": True,
-        "logprob_start_len": 0,
-        "return_entropy": True,
-    }
+    baseline_tokens, baseline_action_spans = build_baseline_tokens_and_spans(
+        rebuild_tokens, think_spans, think_end_id, im_end_id, im_start_id
+    )
+    assert len(baseline_action_spans) == len(action_spans)
 
     timeout = aiohttp.ClientTimeout(total=600)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(f"{rm_endpoint}/generate", json=payload) as resp:
-            resp.raise_for_status()
-            rm_resp = await resp.json()
-    rm_log_probs = [i[0] for i in rm_resp["meta_info"]["input_token_logprobs"]]
-    rm_entropy = rm_resp["meta_info"]["input_token_entropy"]
-    assert len(rm_log_probs) == len(rebuild_tokens)
-    assert len(rm_entropy) == len(rebuild_tokens)
-    assert rm_log_probs[0] is None
-    assert rm_entropy[0] is None
+        (rm_log_probs, rm_entropy), (baseline_log_probs, _) = await asyncio.gather(
+            _fetch_rm_logprobs(session, rm_endpoint, rebuild_tokens),
+            _fetch_rm_logprobs(session, rm_endpoint, baseline_tokens),
+        )
 
+    for (s, e), (bs, be) in zip(action_spans, baseline_action_spans):
+        assert rebuild_tokens[s:e] == baseline_tokens[bs:be], \
+            f"Action token mismatch: rebuild[{s}:{e}]={rebuild_tokens[s:e]} != baseline[{bs}:{be}]={baseline_tokens[bs:be]}"
     turn_rewards = [sum(rm_log_probs[s:e])/(e-s) if e-s > 1 else None for s, e in action_spans]
+    baseline_rewards = [sum(baseline_log_probs[s:e])/(e-s) if e-s > 1 else None for s, e in baseline_action_spans]
+    info_gain = [
+        (t - b if t is not None and b is not None else None)
+        for t, b in zip(turn_rewards, baseline_rewards)
+    ]
     assert len(sample.metadata["output_token_mask"]) == len(sample.tokens)
     #turn_span = get_consecutive_span(sample.metadata["output_token_mask"])
-    assert len(sample_think_spans) == len(turn_rewards)
+    assert len(sample_think_spans) == len(info_gain)
     reasonable_rewards = torch.zeros(len(sample.tokens))
     for i, (s, e) in enumerate(sample_think_spans):
-        if turn_rewards[i] is None:
+        if info_gain[i] is None:
             # Mask invalid turn tokens
             sample.metadata["output_token_mask"][s:e] = 0
             continue
@@ -209,8 +266,7 @@ async def calculate_turn_reward(
         # e-1 is the im_end position
         assert sample.tokens[e-1] == im_end_id
         assert args.reasonable_temperature is not None
-        reasonable_rewards[e-1] = math.exp(turn_rewards[i]/args.reasonable_temperature)
-        assert 0<=reasonable_rewards[e-1]<=1
+        reasonable_rewards[e-1] = math.tanh(info_gain[i]/args.reasonable_temperature)
         # penalize short thinking
         if e-s <= 100:
             reasonable_rewards[e-1] = -5
@@ -229,6 +285,10 @@ async def calculate_turn_reward(
         avg_phi = phi.mean()
         assert args.style_temperature is not None
         style_reward[te-1] = torch.tanh(avg_phi/args.style_temperature)
+
+    valid_gains = [g for g in info_gain if g is not None]
+    if valid_gains:
+        sample.customized_metrics["avg_info_gain"] = sum(valid_gains) / len(valid_gains)
 
     reasonable_rewards = reasonable_rewards[-sample.response_length:]
     style_reward = style_reward[-sample.response_length:]
@@ -362,5 +422,23 @@ if __name__ == "__main__":
         expected_actions=[(5, 8)],
         label="test_filter_non_assistant",
     )
+
+    # Test build_baseline_tokens_and_spans
+    rebuild = [77, S, 100, 101, 102, E, 88, 89, IM, S, 200, 201, E, 99, IM]
+    think_spans = [(2, 6), (10, 13)]
+    baseline, b_spans = build_baseline_tokens_and_spans(rebuild, think_spans, E, IM, IMS)
+    assert baseline == [77, S, E, 88, 89, IM, S, E, 99, IM], f"baseline: {baseline}"
+    assert b_spans == [(3, 6), (8, 10)], f"baseline action spans: {b_spans}"
+    for (oas, oae), (bas, bae) in zip([(6, 9), (13, 15)], b_spans):
+        assert rebuild[oas:oae] == baseline[bas:bae], "action content mismatch"
+    print("test_baseline: PASSED")
+
+    # Single span: empty action after </think> (action span has 1 token = im_end only)
+    rebuild2 = [77, S, 100, 101, E, IM, 88]
+    think_spans2 = [(2, 5)]
+    baseline2, b_spans2 = build_baseline_tokens_and_spans(rebuild2, think_spans2, E, IM, IMS)
+    assert baseline2 == [77, S, E, IM, 88], f"baseline2: {baseline2}"
+    assert b_spans2 == [(3, 4)], f"baseline2 action spans: {b_spans2}"
+    print("test_baseline_single_empty_action: PASSED")
 
     print("All tests passed.")
