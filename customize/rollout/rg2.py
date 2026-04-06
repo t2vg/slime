@@ -12,7 +12,17 @@ import math
 import uuid
 logger = logging.getLogger(__name__)
 
-ENCODE_SERVER_URL = "http://t2vg-7whvl-server-0.t2vg-7whvl:8100"
+
+def gaussian_length_penalty(length: int, mean: float = 150, window: float = 50, max_penalty: float = 5.0) -> float:
+    """Gaussian-shaped penalty that is ~0 at `mean` and rapidly approaches
+    `-max_penalty` when `|length - mean|` exceeds `window`.
+
+    sigma is derived so that at exactly ±window the penalty already reaches
+    ~95 % of max_penalty (window ≈ 2σ)."""
+    sigma = window / 2.0
+    return max_penalty * (math.exp(-((length - mean) ** 2) / (2 * sigma ** 2)) - 1)
+
+ENCODE_SERVER_URL = "http://t2vg-2tfv5-server-0.t2vg-2tfv5:8100"
 
 def encode_data(data: dict[str, Any]) -> list[int]:
     import requests
@@ -226,13 +236,24 @@ async def calculate_turn_reward(
     args: Namespace, sample: Sample, think_start_id: int, think_end_id: int,
     im_end_id: int, im_start_id: int, assistant_id: int, role_prefix_len: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    #rm_endpoint = args.rm_url
-    rm_endpoint = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+    rm_endpoint = args.rm_url
+    sglang_endpoint = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     rebuild_tokens, think_spans, action_spans, sample_think_spans, last_turn_invalid = get_tokens_with_new_thoughts(sample, think_start_id, think_end_id, im_end_id, im_start_id, assistant_id, role_prefix_len)
     baseline_tokens, baseline_action_spans = build_baseline_tokens_and_spans(
         rebuild_tokens, think_spans, think_end_id, im_end_id, im_start_id
     )
-    assert len(baseline_action_spans) == len(action_spans)
+    if len(baseline_action_spans) != len(action_spans):
+        with open(f"/data/gongrui/slime_tmp/mismatch_{uuid.uuid4()}.json", "w") as f:
+            json.dump({
+                "rebuild_tokens": rebuild_tokens,
+                "think_spans": think_spans,
+                "action_spans": action_spans,
+                "baseline_tokens": baseline_tokens,
+                "baseline_action_spans": baseline_action_spans,
+            }, f, indent=2)
+        raise ValueError(
+            f"Action span count mismatch: rebuild={len(action_spans)} vs baseline={len(baseline_action_spans)}; details dumped to mismatch_*.json"
+        )
 
     timeout = aiohttp.ClientTimeout(total=600)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -254,6 +275,7 @@ async def calculate_turn_reward(
     #turn_span = get_consecutive_span(sample.metadata["output_token_mask"])
     assert len(sample_think_spans) == len(info_gain)
     reasonable_rewards = torch.zeros(len(sample.tokens))
+    length_penalties: list[float] = []
     for i, (s, e) in enumerate(sample_think_spans):
         if info_gain[i] is None:
             # Mask invalid turn tokens
@@ -267,9 +289,9 @@ async def calculate_turn_reward(
         assert sample.tokens[e-1] == im_end_id
         assert args.reasonable_temperature is not None
         reasonable_rewards[e-1] = math.tanh(info_gain[i]/args.reasonable_temperature)
-        # penalize short thinking
-        if e-s <= 100:
-            reasonable_rewards[e-1] = -5
+        lp = gaussian_length_penalty(e - s, mean=150, window=50, max_penalty=0)
+        reasonable_rewards[e-1] += lp
+        length_penalties.append(lp)
     #reassign loss mask
     sample.loss_mask = sample.metadata["output_token_mask"][-sample.response_length:]
 
@@ -284,11 +306,17 @@ async def calculate_turn_reward(
         #style_reward[ts:te] += (torch.sigmoid(phi/10) - 0.5) * 2
         avg_phi = phi.mean()
         assert args.style_temperature is not None
-        style_reward[te-1] = torch.tanh(avg_phi/args.style_temperature)
+        style_reward[te-1] = torch.tanh(avg_phi/args.style_temperature).clip(-1, 0.1)
 
     valid_gains = [g for g in info_gain if g is not None]
     if valid_gains:
         sample.customized_metrics["avg_info_gain"] = sum(valid_gains) / len(valid_gains)
+        sample.customized_metrics["max_info_gain"] = max(valid_gains)
+        sample.customized_metrics["min_info_gain"] = min(valid_gains)
+    if length_penalties:
+        sample.customized_metrics["avg_length_penalty"] = sum(length_penalties) / len(length_penalties)
+        sample.customized_metrics["max_length_penalty"] = max(length_penalties)
+        sample.customized_metrics["min_length_penalty"] = min(length_penalties)
 
     reasonable_rewards = reasonable_rewards[-sample.response_length:]
     style_reward = style_reward[-sample.response_length:]

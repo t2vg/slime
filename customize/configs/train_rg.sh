@@ -36,17 +36,19 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/models/qwen3-4b-32k.sh"
 
 
-EXP_NAME="qwen3-4b-grpo179_rg_sft_ppo_w0.8_min100_sparsestyle_g1l1_samemodel_st1_rt10"
+EXP_NAME="qwen3-4b-grpo179_rg_sft_ppo_w0.8_rmsparsestyleclip0.1_sg1sl1_rg1rl1_rmrb_st1_rt2_lp0_continue_from_w1.0step29"
+
 export WANDB_JOB_NAME=$EXP_NAME
 export WANDB_NAME=$EXP_NAME
 GPU_NUM=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 
 CKPT_ARGS=(
    --hf-checkpoint $BASE_DIR/blob/rg/ckpts/qwen3-4b-grpo179_rg_sft_notag_10k_lora_lr2e4_bs128_ep3/v3-20260326-161646/checkpoint-237-merged
-   --ref-load $BASE_DIR/blob/rg/ckpts/qwen3-4b-grpo179_rg_sft_notag_10k_lora_lr2e4_bs128_ep3_torch_dist
-   #--load $BASE_DIR/blob/rg/ckpts/$EXP_NAME/actor
+   #--ref-load $BASE_DIR/blob/rg/ckpts/qwen3-4b-grpo179_rg_sft_notag_10k_lora_lr2e4_bs128_ep3_torch_dist
+   #--ref-load $BASE_DIR/blob/rg/ckpts/qwen3-4b-grpo179_rg_sft_ppo_w1.0_sparsestyle_sg1sl1_rg1rl1_rmrb_st1_rt2_lp0/actor
+   --load $BASE_DIR/blob/rg/ckpts/qwen3-4b-grpo179_rg_sft_ppo_w1.0_sparsestyle_sg1sl1_rg1rl1_rmrb_st1_rt2_lp0/actor
    --save $BASE_DIR/blob/rg/ckpts/$EXP_NAME/actor
-   --critic-load $BASE_DIR/blob/rg/ckpts/qwen3-4b-grpo179_rg_sft_ppo_w0.5_min100_sparsestyle_g1l1_samemodel_st1_rt10/critic/iter_0000009
+   --critic-load $BASE_DIR/blob/rg/ckpts/qwen3-4b-grpo179_rg_sft_ppo_w1.0_sparsestyle_sg1sl1_rg1rl1_rmrb_st1_rt2_lp0/critic
    --critic-save $BASE_DIR/blob/rg/ckpts/$EXP_NAME/critic
    --save-interval 10
 )
@@ -95,15 +97,15 @@ ALG_ARGS=(
    --use-rollout-logprobs
    --use-customize-rewards
    --normalize-advantages
-   --num-critic-only-steps 10
+   --num-critic-only-steps 0
    --critic-num-heads 2
    --reasonable-reward-weight 0.8
-   --reasonable-temperature 10
+   --reasonable-temperature 2
    --style-temperature 1
-   --gamma 0.99
-   --lambd 0.95
-   --gamma-reasonable 0.99
-   --lambd-reasonable 0.95
+   --gamma 1.0
+   --lambd 1.0
+   --gamma-reasonable 1.0
+   --lambd-reasonable 1.0
    --gamma-style 1.0
    --lambd-style 1.0
 )
