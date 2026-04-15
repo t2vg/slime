@@ -19,7 +19,7 @@ ulimit -n 1048576
 
 # will prevent ray from buffering stdout/stderr
 export PYTHONBUFFERED=16
-export FLASHINFER_WORKSPACE_BASE="/workspace/gongrui"
+export FLASHINFER_WORKSPACE_BASE="/tmp/gongrui"
 rm -f /tmp/agent_core_session.sqlite
 BASE_DIR=$(pwd)
 
@@ -36,7 +36,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/models/qwen3-4b-32k.sh"
 
 
-EXP_NAME="qwen3-4b-grpo179_rg_sft_ppo_w0.8_rmsparsestyleclip0.1_sg1sl1_rg1rl1_rmrb_st1_rt2_lp0_continue_from_w1.0step29"
+EXP_NAME="qwen3-4b-grpo179_rg_sft_ppo_w0.8_rmsparsestyleclip0.1_sg1sl1_rg1rl1_rmrb_st1_rt2_lp1.2_continue_from_w1.0step29"
 
 export WANDB_JOB_NAME=$EXP_NAME
 export WANDB_NAME=$EXP_NAME
@@ -97,7 +97,7 @@ ALG_ARGS=(
    --use-rollout-logprobs
    --use-customize-rewards
    --normalize-advantages
-   --num-critic-only-steps 0
+   --num-critic-only-steps 10
    --critic-num-heads 2
    --reasonable-reward-weight 0.8
    --reasonable-temperature 2
@@ -156,7 +156,7 @@ ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus $GPU_NUM --disable-
 # Build the runtime environment JSON with proper variable substitution
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
-    \"PYTHONPATH\": \"$BASE_DIR/Megatron-LM:$BASE_DIR/customize\",
+    \"PYTHONPATH\": \"$BASE_DIR/../Megatron-LM:$BASE_DIR/customize\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
   }

@@ -10,6 +10,7 @@ import logging
 import json
 import math
 import uuid
+import openai
 logger = logging.getLogger(__name__)
 
 
@@ -22,7 +23,53 @@ def gaussian_length_penalty(length: int, mean: float = 150, window: float = 50, 
     sigma = window / 2.0
     return max_penalty * (math.exp(-((length - mean) ** 2) / (2 * sigma ** 2)) - 1)
 
-ENCODE_SERVER_URL = "http://t2vg-2tfv5-server-0.t2vg-2tfv5:8100"
+async def check_answer(thought: str) -> bool:
+    CHECK_ANSWER_PROMPT = r"""
+I will give you an internal thought of an agent solving a deep research problem. You need to classify the thought into one of the following categories:
+A. The thought decides to give an final answer.
+B. The thought decides to continue to search for more information.
+
+Your output should be a json object with the following format:
+{
+    "reason": "A simple reason for your judgement",
+    "is_final_answer": true or false,
+}
+
+Here is the thought:
+"""
+    response_format = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "answer",
+        "description": "Result of the classification",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "A simple reason for your judgement"
+                },
+                "is_final_answer": {
+                    "type": "boolean",
+                    "description": "Whether the thought decides to give an final answer"
+                }
+            },
+            "required": ["reason", "is_final_answer"],
+            "additionalProperties": False
+        }
+      }
+    }
+    client = openai.AsyncOpenAI(base_url="http://t2vginfra.westus2.cloudapp.azure.com/litellm/",api_key="sk-1234")
+    response = await client.chat.completions.create(
+    model="gpt-5.4-mini",
+    messages=[{"role": "user", "content": CHECK_ANSWER_PROMPT + thought}],
+    response_format=response_format
+    )
+    result = response.choices[0].message.content
+    return json.loads(result)['is_final_answer']
+
+ENCODE_SERVER_URL = "http://gnet-server:8100"
 
 def encode_data(data: dict[str, Any]) -> list[int]:
     import requests
@@ -43,12 +90,15 @@ def rebuild_data_with_new_thoughts(sample: Sample) -> tuple[dict[str, Any], bool
             break
         if t['role'] == 'assistant':
             n = new_thoughts[idx]
-            content = n.text.split("</think>")[0].split("<think>")[-1].strip()
-            content = "<think>\n" + content + "\n</think>\n\n"
+            raw_content = n.text.split("</think>")[0].split("<think>")[-1].strip()
+            content = "<think>\n" + raw_content + "\n</think>\n\n"
             if i == len(raw_traj) - 1:
                 answer = t['content'].split("</think>")[-1].strip()
                 if len(answer) == 0:
                     last_turn_empty = True
+                else:
+                    sample.metadata['thought_for_final_answer'] = raw_content
+
             else:
                 answer = ""
             t['content'] = content + answer
@@ -289,9 +339,17 @@ async def calculate_turn_reward(
         assert sample.tokens[e-1] == im_end_id
         assert args.reasonable_temperature is not None
         reasonable_rewards[e-1] = math.tanh(info_gain[i]/args.reasonable_temperature)
-        lp = gaussian_length_penalty(e - s, mean=150, window=50, max_penalty=0)
+        if e-s > 500:
+            lp = gaussian_length_penalty(e - s, mean=500, window=100, max_penalty=1.2)
+        else:
+            lp = 0
         reasonable_rewards[e-1] += lp
         length_penalties.append(lp)
+        if i == len(sample_think_spans) - 1 and "thought_for_final_answer" in sample.metadata:
+            thought = sample.metadata['thought_for_final_answer']
+            is_final_answer = await check_answer(thought)
+            if not is_final_answer:
+                reasonable_rewards[e-1] = -2
     #reassign loss mask
     sample.loss_mask = sample.metadata["output_token_mask"][-sample.response_length:]
 

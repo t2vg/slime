@@ -29,8 +29,8 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
-    tokenizer = get_processor(args.tokenizer_path)
-    template = get_template(tokenizer)
+    tokenizer = get_processor(args.tokenizer_path, model_type="qwen3")
+    template = get_template(tokenizer, template_type="qwen3_thinking")
     template.set_mode("train")
     logger.info("Loaded tokenizer from %s, agent_template: %s", args.tokenizer_path, template._agent_template)
     uvicorn.run(app, host=args.host, port=args.port)

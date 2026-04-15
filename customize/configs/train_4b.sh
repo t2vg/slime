@@ -19,7 +19,8 @@ ulimit -n 1048576
 
 # will prevent ray from buffering stdout/stderr
 export PYTHONBUFFERED=16
-export FLASHINFER_WORKSPACE_BASE="/workspace/gongrui"
+export FLASHINFER_WORKSPACE_BASE="/tmp/gongrui"
+export TRITON_HOME="/tmp/gongrui"
 rm -f /tmp/agent_core_session.sqlite
 BASE_DIR=$(pwd)
 
@@ -36,30 +37,31 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/models/qwen3-4b-32k.sh"
 
 
-EXP_NAME="qwen3-4b-thinking-grpo"
+EXP_NAME="qwen3-4b-rg_web_grpo"
 
+export WANDB_JOB_NAME=$EXP_NAME
+export WANDB_NAME=$EXP_NAME
 GPU_NUM=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 
 CKPT_ARGS=(
-   --hf-checkpoint $BASE_DIR/ckpts/Qwen3-4B-Thinking-2507
-   --ref-load $BASE_DIR/ckpts/Qwen3-4B-Thinking-2507_torch_dist
-   --load $BASE_DIR/ckpts/$EXP_NAME
-   --save $BASE_DIR/ckpts/$EXP_NAME
+   --hf-checkpoint $BASE_DIR/blob/rg/ckpts/qwen3-4b-grpo179_rg_sft_ppo_w0.8_rmsparsestyleclip0.1_sg1sl1_rg1rl1_rmrb_st1_rt2_lp1.2_continue_from_w1.0step29/actor/hf/iter_0000069
+   --load $BASE_DIR/blob/rg/ckpts/rl_dr/$EXP_NAME
+   --save $BASE_DIR/blob/rg/ckpts/rl_dr/$EXP_NAME
    --save-interval 10
 )
 
 
 ROLLOUT_ARGS=(
-   --prompt-data $BASE_DIR/data/web_47k_nosft.jsonl
+   --prompt-data $BASE_DIR/blob/rg/data/rl_dr/web_47k_nosft.jsonl
    --input-key question
    --label-key answer
    --rollout-shuffle
    --num-rollout 300
    --rollout-batch-size 32
    --n-samples-per-prompt 16
-   --rollout-temperature 1
-   --sglang-server-concurrency 128 # Total concurrency = server_concurrency * sglang_dp_size
-   --over-sampling-batch-size 64
+   --rollout-temperature 0.7
+   --sglang-server-concurrency 96 # Total concurrency = server_concurrency * sglang_dp_size
+   --over-sampling-batch-size 48
 
 
    --num-steps-per-rollout 1
@@ -77,7 +79,7 @@ ROLLOUT_ARGS=(
 EVAL_ARGS=(
    --skip-eval-before-train
    --eval-interval 10
-   --eval-prompt-data bc300 $BASE_DIR/data/browsecomp_300.jsonl
+   --eval-prompt-data bc300 $BASE_DIR/blob/benchmarks/browsecomp_300.jsonl
    --n-samples-per-eval-prompt 1
    --eval-max-response-len 64000
 )
@@ -138,7 +140,7 @@ ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus $GPU_NUM --disable-
 # Build the runtime environment JSON with proper variable substitution
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
-    \"PYTHONPATH\": \"$BASE_DIR/Megatron-LM:$BASE_DIR/customize\",
+    \"PYTHONPATH\": \"$BASE_DIR/../Megatron-LM:$BASE_DIR/customize\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
   }
