@@ -535,7 +535,6 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
             if rewards is None:
                 raise ValueError("Use customize rewards requires token_rewards, but it is missing.")
         #temporary check for dual-head GAE
-        assert args.critic_num_heads > 1
         assert args.gamma_reasonable is not None and args.lambd_reasonable is not None
         assert args.gamma_style is not None and args.lambd_style is not None
         if args.use_customize_rewards and args.critic_num_heads > 1:
@@ -568,6 +567,18 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
 
             advantages = [rw * a_r + sw * a_s for a_r, a_s in zip(adv_r, adv_s, strict=True)]
             returns = [torch.stack([r_r, r_s], dim=-1) for r_r, r_s in zip(ret_r, ret_s, strict=True)]
+        elif args.use_customize_rewards and args.critic_num_heads == 1:
+            rw = args.reasonable_reward_weight
+            sw = 1 - rw
+
+            rewards_r = [r[:, 0] for r in rewards]
+            rewards_s = [r[:, 1] for r in rewards]
+            assert values[0].ndim == 1
+            weighted_rewards = [rw * rr + sw * rs for rr, rs in zip(rewards_r, rewards_s, strict=True)]
+            advantages, returns = get_advantages_and_returns_batch(
+                total_lengths, response_lengths, values, weighted_rewards, args.gamma, args.lambd,
+                loss_masks_list=loss_masks,
+            )
         else:
             advantages, returns = get_advantages_and_returns_batch(
                 total_lengths, response_lengths, values, rewards, args.gamma, args.lambd,

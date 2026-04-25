@@ -2,15 +2,18 @@
 
 
 # for rerun the task
-pkill -9 sglang
-sleep 3
-ray stop --force
-pkill -9 ray
-pkill -9 python
-sleep 3
-pkill -9 ray
-pkill -9 python
+export NUM_NODES=1
 
+if [ "$NUM_NODES" -eq 1 ]; then
+   pkill -9 sglang
+   sleep 3
+   ray stop --force
+   pkill -9 ray
+   pkill -9 python
+   sleep 3
+   pkill -9 ray
+   pkill -9 python
+fi
 
 
 set -ex
@@ -20,6 +23,7 @@ ulimit -n 1048576
 # will prevent ray from buffering stdout/stderr
 export PYTHONBUFFERED=16
 export FLASHINFER_WORKSPACE_BASE="/tmp/gongrui"
+export TRITON_HOME="/tmp/gongrui"
 rm -f /tmp/agent_core_session.sqlite
 BASE_DIR=$(pwd)
 
@@ -36,7 +40,17 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/models/qwen3-4b-32k.sh"
 
 
-EXP_NAME="qwen3-4b-grpo179_rg_sft_ppo_w0.8_rmsparsestyleclip0.1_sg1sl1_rg1rl1_rmrb_st1_rt2_lp1.2_continue_from_w1.0step29"
+if [ "$EXP_NAME" == "" ]; then
+   echo "EXP_NAME is not set"
+   exit 1
+fi
+RM_URL=${RM_URL:-"http://172.179.10.5:30000"}
+CRITIC_NUM_HEADS=${CRITIC_NUM_HEADS:-2}
+REASONABLE_REWARD_WEIGHT=${REASONABLE_REWARD_WEIGHT:-0.8}
+REASONABLE_TEMPERATURE=${REASONABLE_TEMPERATURE:-2}
+STYLE_TEMPERATURE=${STYLE_TEMPERATURE:-1}
+STYLE_REWARD_CLIP=${STYLE_REWARD_CLIP:-0.1}
+LP_MEAN=${LP_MEAN:-500}
 
 export WANDB_JOB_NAME=$EXP_NAME
 export WANDB_NAME=$EXP_NAME
@@ -44,11 +58,10 @@ GPU_NUM=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 
 CKPT_ARGS=(
    --hf-checkpoint $BASE_DIR/blob/rg/ckpts/qwen3-4b-grpo179_rg_sft_notag_10k_lora_lr2e4_bs128_ep3/v3-20260326-161646/checkpoint-237-merged
-   #--ref-load $BASE_DIR/blob/rg/ckpts/qwen3-4b-grpo179_rg_sft_notag_10k_lora_lr2e4_bs128_ep3_torch_dist
-   #--ref-load $BASE_DIR/blob/rg/ckpts/qwen3-4b-grpo179_rg_sft_ppo_w1.0_sparsestyle_sg1sl1_rg1rl1_rmrb_st1_rt2_lp0/actor
-   --load $BASE_DIR/blob/rg/ckpts/qwen3-4b-grpo179_rg_sft_ppo_w1.0_sparsestyle_sg1sl1_rg1rl1_rmrb_st1_rt2_lp0/actor
+   --ref-load $BASE_DIR/blob/rg/ckpts/qwen3-4b-grpo179_rg_sft_notag_10k_lora_lr2e4_bs128_ep3_torch_dist
+   #--load $BASE_DIR/blob/rg/ckpts/qwen3-4b-grpo179_rg_sft_ppo_w1.0_sparsestyle_sg1sl1_rg1rl1_rmrb_st1_rt2_lp0/actor
    --save $BASE_DIR/blob/rg/ckpts/$EXP_NAME/actor
-   --critic-load $BASE_DIR/blob/rg/ckpts/qwen3-4b-grpo179_rg_sft_ppo_w1.0_sparsestyle_sg1sl1_rg1rl1_rmrb_st1_rt2_lp0/critic
+   #--critic-load $BASE_DIR/blob/rg/ckpts/qwen3-4b-grpo179_rg_sft_ppo_w1.0_sparsestyle_sg1sl1_rg1rl1_rmrb_st1_rt2_lp0/critic
    --critic-save $BASE_DIR/blob/rg/ckpts/$EXP_NAME/critic
    --save-interval 10
 )
@@ -75,6 +88,7 @@ ROLLOUT_ARGS=(
    --custom-config-path $BASE_DIR/customize/configs/agent/rg.yaml
    --custom-generate-function-path customize.rollout.rg2.generate
    --partial-rollout
+   --rm-url $RM_URL
 )
 
 
@@ -97,11 +111,13 @@ ALG_ARGS=(
    --use-rollout-logprobs
    --use-customize-rewards
    --normalize-advantages
-   --num-critic-only-steps 10
-   --critic-num-heads 2
-   --reasonable-reward-weight 0.8
-   --reasonable-temperature 2
-   --style-temperature 1
+   --num-critic-only-steps 0
+   --critic-num-heads $CRITIC_NUM_HEADS
+   --reasonable-reward-weight $REASONABLE_REWARD_WEIGHT
+   --reasonable-temperature $REASONABLE_TEMPERATURE
+   --style-temperature $STYLE_TEMPERATURE
+   --style-reward-clip $STYLE_REWARD_CLIP
+   --lp-mean $LP_MEAN
    --gamma 1.0
    --lambd 1.0
    --gamma-reasonable 1.0
@@ -150,7 +166,10 @@ MISC_ARGS=(
 
 # launch the master node of ray in container
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus $GPU_NUM --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+if [ "$NUM_NODES" -eq 1 ]; then
+    ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus $GPU_NUM --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+fi
+
 
 
 # Build the runtime environment JSON with proper variable substitution
@@ -158,7 +177,9 @@ RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"$BASE_DIR/../Megatron-LM:$BASE_DIR/customize\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
+    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
+    \"TRITON_HOME\": \"${TRITON_HOME}\",
+    \"FLASHINFER_WORKSPACE_BASE\": \"${FLASHINFER_WORKSPACE_BASE}\"
   }
 }"
 
@@ -166,7 +187,7 @@ RUNTIME_ENV_JSON="{
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
-   --actor-num-nodes 1 \
+   --actor-num-nodes $NUM_NODES \
    --actor-num-gpus-per-node 4 \
    --colocate \
    ${MODEL_ARGS[@]} \

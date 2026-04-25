@@ -2,14 +2,19 @@
 
 
 # for rerun the task
-pkill -9 sglang
-sleep 3
-ray stop --force
-pkill -9 ray
-pkill -9 python
-sleep 3
-pkill -9 ray
-pkill -9 python
+
+export NUM_NODES=1
+
+if [ "$NUM_NODES" -eq 1 ]; then
+   pkill -9 sglang
+   sleep 3
+   ray stop --force
+   pkill -9 ray
+   pkill -9 python
+   sleep 3
+   pkill -9 ray
+   pkill -9 python
+fi
 
 
 
@@ -34,37 +39,38 @@ echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/qwen3-4b-32k.sh"
+source "${SCRIPT_DIR}/models/qwen3-4b-42k.sh"
 
 
-EXP_NAME="qwen3-4b-rg_web_grpo"
+EXP_NAME="qwen3-4b-grpo179_sft_with_22k_cycle1_bc_grpo"
 
 export WANDB_JOB_NAME=$EXP_NAME
 export WANDB_NAME=$EXP_NAME
 GPU_NUM=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 
 CKPT_ARGS=(
-   --hf-checkpoint $BASE_DIR/blob/rg/ckpts/qwen3-4b-grpo179_rg_sft_ppo_w0.8_rmsparsestyleclip0.1_sg1sl1_rg1rl1_rmrb_st1_rt2_lp1.2_continue_from_w1.0step29/actor/hf/iter_0000069
-   --load $BASE_DIR/blob/rg/ckpts/rl_dr/$EXP_NAME
+   --hf-checkpoint $BASE_DIR/blob/rg/ckpts/sft_base/qwen3-4b-grpo179_sft_with_22k_cycle1_bs252_lr1e5/v1-20260415-122910/checkpoint-264
+   --ref-load $BASE_DIR/blob/rg/ckpts/rl_dr/qwen3-4b-grpo179_sft_with_22k_cycle1_bs252_lr1e5_torch_dist
+   #--load $BASE_DIR/blob/rg/ckpts/rl_dr/$EXP_NAME
    --save $BASE_DIR/blob/rg/ckpts/rl_dr/$EXP_NAME
    --save-interval 10
 )
 
 
 ROLLOUT_ARGS=(
-   --prompt-data $BASE_DIR/blob/rg/data/rl_dr/web_47k_nosft.jsonl
+   --prompt-data $BASE_DIR/blob/rg/data/rl_dr/browsecomp_remaining.jsonl
    --input-key question
    --label-key answer
    --rollout-shuffle
    --num-rollout 300
    --rollout-batch-size 32
-   --n-samples-per-prompt 16
-   --rollout-temperature 0.7
-   --sglang-server-concurrency 96 # Total concurrency = server_concurrency * sglang_dp_size
-   --over-sampling-batch-size 48
+   --n-samples-per-prompt 8
+   --rollout-temperature 0.8
+   --sglang-server-concurrency 48 # Total concurrency = server_concurrency * sglang_dp_size
+   --over-sampling-batch-size 64
 
 
-   --num-steps-per-rollout 1
+   --num-steps-per-rollout 2
    --balance-data
 
    --dynamic-sampling-filter-path customize.filters.drop_invalid_samples.validate_samples
@@ -134,7 +140,9 @@ MISC_ARGS=(
 
 # launch the master node of ray in container
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus $GPU_NUM --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+if [ "$NUM_NODES" -eq 1 ]; then
+    ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus $GPU_NUM --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+fi
 
 
 # Build the runtime environment JSON with proper variable substitution
@@ -142,7 +150,9 @@ RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"$BASE_DIR/../Megatron-LM:$BASE_DIR/customize\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
+    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
+    \"TRITON_HOME\": \"${TRITON_HOME}\",
+    \"FLASHINFER_WORKSPACE_BASE\": \"${FLASHINFER_WORKSPACE_BASE}\"
   }
 }"
 
@@ -150,7 +160,7 @@ RUNTIME_ENV_JSON="{
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
-   --actor-num-nodes 1 \
+   --actor-num-nodes $NUM_NODES \
    --actor-num-gpus-per-node $GPU_NUM \
    --colocate \
    ${MODEL_ARGS[@]} \

@@ -979,6 +979,18 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default=1.0,
                 help="Weight for reasonable reward advantage when combining dual-head advantages (style weight = 1 - this).",
             )
+            parser.add_argument(
+                "--lp-mean",
+                type=float,
+                default=500,
+                help="Mean for length penalty for reasonable reward.",
+            )
+            parser.add_argument(
+                "--style-reward-clip",
+                type=float,
+                default=0.1,
+                help="Clip for style reward.",
+            )
 
             return parser
 

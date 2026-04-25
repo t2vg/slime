@@ -339,8 +339,8 @@ async def calculate_turn_reward(
         assert sample.tokens[e-1] == im_end_id
         assert args.reasonable_temperature is not None
         reasonable_rewards[e-1] = math.tanh(info_gain[i]/args.reasonable_temperature)
-        if e-s > 500:
-            lp = gaussian_length_penalty(e - s, mean=500, window=100, max_penalty=1.2)
+        if e-s > args.lp_mean:
+            lp = gaussian_length_penalty(e - s, mean=args.lp_mean, window=100, max_penalty=1.2)
         else:
             lp = 0
         reasonable_rewards[e-1] += lp
@@ -364,7 +364,7 @@ async def calculate_turn_reward(
         #style_reward[ts:te] += (torch.sigmoid(phi/10) - 0.5) * 2
         avg_phi = phi.mean()
         assert args.style_temperature is not None
-        style_reward[te-1] = torch.tanh(avg_phi/args.style_temperature).clip(-1, 0.1)
+        style_reward[te-1] = torch.tanh(avg_phi/args.style_temperature).clip(-1, args.style_reward_clip)
 
     valid_gains = [g for g in info_gain if g is not None]
     if valid_gains:
