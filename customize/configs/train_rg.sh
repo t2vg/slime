@@ -51,19 +51,46 @@ REASONABLE_TEMPERATURE=${REASONABLE_TEMPERATURE:-2}
 STYLE_TEMPERATURE=${STYLE_TEMPERATURE:-1}
 STYLE_REWARD_CLIP=${STYLE_REWARD_CLIP:-0.1}
 LP_MEAN=${LP_MEAN:-500}
-
+RESUME_CKPT=${RESUME_CKPT:-0}
 export WANDB_JOB_NAME=$EXP_NAME
 export WANDB_NAME=$EXP_NAME
-GPU_NUM=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
+export RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=1
+export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-"0,1,2,3,4,5,6,7"}
+GPU_NUM=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l || true)
+if [ "$GPU_NUM" -eq 0 ]; then
+    GPU_NUM=$(amd-smi list | grep GPU | wc -l)
+fi
+
+bash customize/launch_data_encoder.sh &
+
+# check if the checkpoint exists
+ACTOR_CKPT=""
+CRITIC_CKPT=""
+
+if [ "$RESUME_CKPT" -eq 1 ]; then
+   if [ -f $BASE_DIR/blob/rg/ckpts/$EXP_NAME/actor/latest_checkpointed_iteration.txt ]; then
+      ACTOR_CKPT="--load $BASE_DIR/blob/rg/ckpts/$EXP_NAME/actor"
+   else
+      echo "Actor checkpoint not found"
+      exit 1
+   fi
+
+   if [ -f $BASE_DIR/blob/rg/ckpts/$EXP_NAME/critic/latest_checkpointed_iteration.txt ]; then
+      CRITIC_CKPT="--critic-load $BASE_DIR/blob/rg/ckpts/$EXP_NAME/critic"
+   else
+      echo "Critic checkpoint not found"
+      exit 1
+   fi
+fi
 
 CKPT_ARGS=(
    --hf-checkpoint $BASE_DIR/blob/rg/ckpts/qwen3-4b-grpo179_rg_sft_notag_10k_lora_lr2e4_bs128_ep3/v3-20260326-161646/checkpoint-237-merged
-   --ref-load $BASE_DIR/blob/rg/ckpts/qwen3-4b-grpo179_rg_sft_notag_10k_lora_lr2e4_bs128_ep3_torch_dist
-   #--load $BASE_DIR/blob/rg/ckpts/qwen3-4b-grpo179_rg_sft_ppo_w1.0_sparsestyle_sg1sl1_rg1rl1_rmrb_st1_rt2_lp0/actor
+   --ref-load $BASE_DIR/blob/rg/ckpts/rl_dr/qwen3-4b-grpo179_rg_stage1_torch_dist
    --save $BASE_DIR/blob/rg/ckpts/$EXP_NAME/actor
-   #--critic-load $BASE_DIR/blob/rg/ckpts/qwen3-4b-grpo179_rg_sft_ppo_w1.0_sparsestyle_sg1sl1_rg1rl1_rmrb_st1_rt2_lp0/critic
    --critic-save $BASE_DIR/blob/rg/ckpts/$EXP_NAME/critic
    --save-interval 10
+   $ACTOR_CKPT
+   $CRITIC_CKPT
 )
 
 
@@ -71,7 +98,7 @@ ROLLOUT_ARGS=(
    --prompt-data $BASE_DIR/blob/rg/data/rl_rg/22k_cycle1_havefinal_long_train_for_rg_rl.jsonl
    --input-key question
    --rollout-shuffle
-   --num-rollout 300
+   --num-rollout 80
    --rollout-batch-size 256
    --n-samples-per-prompt 2
    --rollout-temperature 1
@@ -111,7 +138,7 @@ ALG_ARGS=(
    --use-rollout-logprobs
    --use-customize-rewards
    --normalize-advantages
-   --num-critic-only-steps 0
+   --num-critic-only-steps 10
    --critic-num-heads $CRITIC_NUM_HEADS
    --reasonable-reward-weight $REASONABLE_REWARD_WEIGHT
    --reasonable-temperature $REASONABLE_TEMPERATURE
@@ -179,7 +206,9 @@ RUNTIME_ENV_JSON="{
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
     \"TRITON_HOME\": \"${TRITON_HOME}\",
-    \"FLASHINFER_WORKSPACE_BASE\": \"${FLASHINFER_WORKSPACE_BASE}\"
+    \"FLASHINFER_WORKSPACE_BASE\": \"${FLASHINFER_WORKSPACE_BASE}\",
+    \"HSA_NO_SCRATCH_RECLAIM\": \"1\",
+    \"AITER_JIT_DIR\": \"/tmp/aiter\"
   }
 }"
 

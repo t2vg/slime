@@ -64,12 +64,13 @@ Here is the thought:
     response = await client.chat.completions.create(
     model="gpt-5.4-mini",
     messages=[{"role": "user", "content": CHECK_ANSWER_PROMPT + thought}],
-    response_format=response_format
+    response_format=response_format,
+    timeout=1800
     )
     result = response.choices[0].message.content
     return json.loads(result)['is_final_answer']
 
-ENCODE_SERVER_URL = "http://gnet-server:8100"
+ENCODE_SERVER_URL = "http://localhost:8100"
 
 def encode_data(data: dict[str, Any]) -> list[int]:
     import requests
