@@ -9,6 +9,16 @@ def validate_samples(args, group: list[Sample]) -> DynamicFilterOutput:
         return DynamicFilterOutput(keep=False, reason="Identical rewards")
     return DynamicFilterOutput(keep=True)
 
+def validate_samples_group_acc_lt_50(args, group: list[Sample]) -> DynamicFilterOutput:
+    if any(s.status == Sample.Status.FAILED for s in group):
+        return DynamicFilterOutput(keep=False, reason="Failed samples")
+    if all(s.reward == group[0].reward for s in group):
+        return DynamicFilterOutput(keep=False, reason="Identical rewards")
+    group_acc = sum(s.reward for s in group) / len(group)
+    if group_acc >= 50:
+        return DynamicFilterOutput(keep=False, reason="Group acc >= 50")
+    return DynamicFilterOutput(keep=True)
+
 def drop_failed_samples(args, group: list[Sample]) -> DynamicFilterOutput:
     if any(s.status == Sample.Status.FAILED for s in group):
         return DynamicFilterOutput(keep=False, reason="Failed samples")

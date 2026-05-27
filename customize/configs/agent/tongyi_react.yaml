@@ -28,3 +28,7 @@ agent_core_config:
     workflow_args:
       return_invalid_toolcall: false
       verify: true
+
+max_staleness: 3
+penalize_invalid_tool_args: true
+invalid_tool_args_penalty: 0

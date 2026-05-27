@@ -17,7 +17,7 @@ set_error_info_depth(1)
 
 logger = logging.getLogger(__name__)
 
-set_sqlite_path("/tmp/agent_core_session.sqlite")
+set_sqlite_path("/tmp/xiaolong/agent_core_session.sqlite")
 
 
 async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, Any], evaluation: bool = False) -> Sample:
@@ -157,7 +157,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
                 loss_mask[last_turn_span[0]:last_turn_span[1]] = 1
                 loss_mask = loss_mask.tolist()
                 assert len(loss_mask) == len(sample.loss_mask), "Loss mask length should be the same"
-                sample.loss_mask = loss_mask
+                # sample.loss_mask = loss_mask
                 reward = args.invalid_tool_args_penalty
 
         
