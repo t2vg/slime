@@ -1,0 +1,23 @@
+agent_core_config:
+  endpoint_cfg:
+    api_key: sk-test
+    base_url:
+    - http://localhost:30000/v1
+    mode: response
+    model: default
+  model_cfg:
+    extra_body: null
+    max_context_length: null
+    min_max_tokens_per_turn: 3000
+    max_turns: null
+    reasoning: null
+    temperature: null
+    top_p: null
+  workflow:
+    name: rg
+
+max_staleness: 3
+
+penalize_invalid_tool_args: false
+
+invalid_tool_args_penalty: -0.2

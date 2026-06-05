@@ -853,6 +853,12 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--entropy-coef", type=float, default=0.0, help="Entropy loss coef")
             parser.add_argument("--gamma", type=float, default=1.0, help="PPO GAE gamma")
             parser.add_argument("--lambd", type=float, default=1.0, help="PPO GAE lambd")
+            parser.add_argument("--gamma-reasonable", type=float, default=None, help="GAE gamma for reasonable reward head (defaults to --gamma)")
+            parser.add_argument("--lambd-reasonable", type=float, default=None, help="GAE lambda for reasonable reward head (defaults to --lambd)")
+            parser.add_argument("--gamma-style", type=float, default=None, help="GAE gamma for style reward head (defaults to --gamma)")
+            parser.add_argument("--lambd-style", type=float, default=None, help="GAE lambda for style reward head (defaults to --lambd)")
+            parser.add_argument("--reasonable-temperature", type=float, default=None, help="Temperature for reasonable reward")
+            parser.add_argument("--style-temperature", type=float, default=None, help="Temperature for style reward")
             parser.add_argument("--normalize-advantages", action="store_true", default=False)
             parser.add_argument(
                 "--disable-grpo-std-normalization",
@@ -955,6 +961,37 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default=1e-4,
                 help="The threshold for Off-Policy Sequence Masking (OPSM).",
             )
+            parser.add_argument(
+                "--use-customize-rewards",
+                action="store_true",
+                default=False,
+                help="Whether to use customize rewards.",
+            )
+            parser.add_argument(
+                "--critic-num-heads",
+                type=int,
+                default=1,
+                help="Number of value heads in the critic model. Use 2 for dual-head GAE with separate reward channels.",
+            )
+            parser.add_argument(
+                "--reasonable-reward-weight",
+                type=float,
+                default=1.0,
+                help="Weight for reasonable reward advantage when combining dual-head advantages (style weight = 1 - this).",
+            )
+            parser.add_argument(
+                "--lp-mean",
+                type=float,
+                default=500,
+                help="Mean for length penalty for reasonable reward.",
+            )
+            parser.add_argument(
+                "--style-reward-clip",
+                type=float,
+                default=0.1,
+                help="Clip for style reward.",
+            )
+
             return parser
 
         def add_on_policy_distillation_arguments(parser):

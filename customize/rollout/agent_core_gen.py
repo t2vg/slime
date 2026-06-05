@@ -34,10 +34,10 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         return sample
 
     config = deepcopy(args.agent_core_config)
-    assert config['workflow']['name'] == "react_ctx_lim"
+    #assert config['workflow']['name'] == "react_ctx_lim"
     sglang_endpoint = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     assert isinstance(sample.prompt, str), "Prompt should be a string"
-    assert sample.label is not None, "Label should not be None"
+    #assert sample.label is not None, "Label should not be None"
     assert (
         sample.status in [Sample.Status.PENDING, Sample.Status.ABORTED, Sample.Status.FAILED]
     ), f"Sample status is {sample.status}"
@@ -50,7 +50,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     task_input: TaskInput = sample.metadata.get("task_input", TaskInput.model_validate(config))
     task_input.endpoint_cfg.base_url = [f"{sglang_endpoint}/v1"]
     task_input.endpoint_cfg.mode = "response"
-    task_input.workflow.workflow_args['verify'] = True
+    #task_input.workflow.workflow_args['verify'] = True
     task_input.ground_truth = sample.label
     task_input.model_cfg.max_context_length = sampling_params["max_new_tokens"]
     task_input.model_cfg.temperature = sampling_params["temperature"]
@@ -71,7 +71,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     abort_trigger = asyncio.create_task(trigger_abort())
 
     try:
-        result = await asyncio.wait_for(task, timeout=3600)
+        result = await asyncio.wait_for(task, timeout=1800)
     except Exception as e:
         logger.warning(f"Unexpected error in rollout: {e}")
         sample.status = Sample.Status.FAILED
@@ -102,7 +102,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
 
     if result.metadata.finish_reason in valid_finish_reasons:
         last_message = result.traj[-1]
-        assert isinstance(last_message, AIMessage), "Last message should be an AI message"
+        assert isinstance(last_message, AIMessage), f"Last message should be an AI message. Got: {last_message}"
         traj_id = last_message.response_metadata["id"]
         response = requests.get(f"{sglang_endpoint}/trajectory/{traj_id}", timeout=60)
         response.raise_for_status()
@@ -118,6 +118,8 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         sample.tokens = token_ids
         sample.response = state.tokenizer.decode(token_ids, skip_special_tokens=False)
         sample.metadata["traj"] = traj
+        sample.metadata["task_result"] = result
+        sample.metadata['output_token_mask'] = output_token_mask
         sample.metadata["round_number"] = result.metadata.metrics.get("llm_calls", 0)
         #sample.response = result.traj
         try:

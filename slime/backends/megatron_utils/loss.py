@@ -198,6 +198,7 @@ def _allgather_cp_redistribute(
                 # This rank has no response logprobs for this sample
                 full_resp = torch.zeros(
                     response_length,
+                    *value.shape[1:],
                     dtype=ref_dtype,
                     device=ref_device,
                     requires_grad=True,
@@ -205,7 +206,8 @@ def _allgather_cp_redistribute(
             else:
                 resp_start = s - logit_global_start
                 resp_end = e - logit_global_start
-                full_resp = F.pad(value, (resp_start, response_length - resp_end))
+                pad_tuple = (0, 0) * (value.dim() - 1) + (resp_start, response_length - resp_end)
+                full_resp = F.pad(value, pad_tuple)
 
             assert full_resp.size(0) == response_length, f"Expected {response_length}, got {full_resp.size(0)}"
             full_resps.append(full_resp)
@@ -506,6 +508,7 @@ def get_values(
         Dict with key "values" mapping to a list of `[R]` value tensors
         per sample.
     """
+    num_heads = logits.size(-1)
     value_list = []
     for logits_chunk, _ in get_responses(
         logits,
@@ -515,8 +518,11 @@ def get_values(
         response_lengths=response_lengths,
         max_seq_lens=max_seq_lens,
     ):
-        assert logits_chunk.size(-1) == 1, f"{logits_chunk.shape}"
-        value_list.append(logits_chunk.squeeze(-1))
+        assert logits_chunk.size(-1) == num_heads, f"{logits_chunk.shape}"
+        if num_heads == 1:
+            value_list.append(logits_chunk.squeeze(-1))
+        else:
+            value_list.append(logits_chunk)  # [R, num_heads]
 
     res = {
         "values": value_list,
@@ -574,6 +580,69 @@ def apply_opd_kl_to_advantages(
 
     # Store reverse KL for logging
     rollout_data["opd_reverse_kl"] = reverse_kls
+
+
+def _normalize_advantages(
+    args: Namespace,
+    advantages: list[torch.Tensor],
+    loss_masks: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    max_seq_lens: list[int] | None,
+) -> list[torch.Tensor]:
+    """Whiten advantages across the data-parallel group using masked statistics."""
+    all_advs = torch.cat(advantages)
+    cp_size = mpu.get_context_parallel_world_size()
+    if cp_size == 1:
+        all_masks = torch.cat(loss_masks)
+    else:
+        mask_chunks = []
+        for i in range(len(advantages)):
+            total_len = total_lengths[i]
+            response_len = response_lengths[i]
+            prompt_len = total_len - response_len
+            max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
+
+            _, _, _, token_offsets = get_logits_and_tokens_offset_with_cp(
+                total_len, response_len, args.qkv_format, max_seq_len
+            )
+
+            s0, e0 = token_offsets[0]
+            s1, e1 = token_offsets[1]
+            res_s0, res_e0 = max(0, s0 - prompt_len), max(0, e0 - prompt_len)
+            res_s1, res_e1 = max(0, s1 - prompt_len), max(0, e1 - prompt_len)
+
+            local_mask_parts = []
+            full_mask = loss_masks[i]
+            if res_e0 > res_s0:
+                local_mask_parts.append(full_mask[res_s0:res_e0])
+            if res_e1 > res_s1:
+                local_mask_parts.append(full_mask[res_s1:res_e1])
+
+            local_mask_chunk = (
+                torch.cat(local_mask_parts)
+                if local_mask_parts
+                else torch.tensor([], device=all_advs.device, dtype=full_mask.dtype)
+            )
+            mask_chunks.append(local_mask_chunk)
+
+        all_masks = torch.cat(mask_chunks)
+
+    if all_masks.numel() > 0:
+        assert (
+            all_advs.size() == all_masks.size()
+        ), f"Shape mismatch before whitening: advantages {all_advs.size()}, masks {all_masks.size()}"
+        dp_group = mpu.get_data_parallel_group()
+
+        whitened_advs_flat = distributed_masked_whiten(
+            all_advs,
+            all_masks,
+            process_group=dp_group,
+            shift_mean=True,
+        )
+        chunk_lengths = [chunk.size(0) for chunk in advantages]
+        return list(torch.split(whitened_advs_flat, chunk_lengths))
+    return advantages
 
 
 def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) -> None:
@@ -640,9 +709,60 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
             if cp_rank == 0:
                 k[-1] += reward
             rewards.append(k)
-        advantages, returns = get_advantages_and_returns_batch(
-            total_lengths, response_lengths, values, rewards, args.gamma, args.lambd
-        )
+        if args.use_customize_rewards:
+            rewards = rollout_data.get("token_rewards")
+            if rewards is None:
+                raise ValueError("Use customize rewards requires token_rewards, but it is missing.")
+        #temporary check for dual-head GAE
+        assert args.gamma_reasonable is not None and args.lambd_reasonable is not None
+        assert args.gamma_style is not None and args.lambd_style is not None
+        if args.use_customize_rewards and args.critic_num_heads > 1:
+            num_heads = args.critic_num_heads
+            assert num_heads == 2, "Dual-head GAE currently supports exactly 2 heads"
+            gamma_r = args.gamma_reasonable
+            lambd_r = args.lambd_reasonable
+            gamma_s = args.gamma_style
+            lambd_s = args.lambd_style
+            rw = args.reasonable_reward_weight
+            sw = 1 - rw
+
+            rewards_r = [r[:, 0] for r in rewards]
+            rewards_s = [r[:, 1] for r in rewards]
+            values_r = [v[:, 0] for v in values]
+            values_s = [v[:, 1] for v in values]
+
+            adv_r, ret_r = get_advantages_and_returns_batch(
+                total_lengths, response_lengths, values_r, rewards_r, gamma_r, lambd_r,
+                loss_masks_list=loss_masks,
+            )
+            adv_s, ret_s = get_advantages_and_returns_batch(
+                total_lengths, response_lengths, values_s, rewards_s, gamma_s, lambd_s,
+                loss_masks_list=loss_masks,
+            )
+
+            if args.normalize_advantages:
+                adv_r = _normalize_advantages(args, adv_r, loss_masks, total_lengths, response_lengths, max_seq_lens)
+                adv_s = _normalize_advantages(args, adv_s, loss_masks, total_lengths, response_lengths, max_seq_lens)
+
+            advantages = [rw * a_r + sw * a_s for a_r, a_s in zip(adv_r, adv_s, strict=True)]
+            returns = [torch.stack([r_r, r_s], dim=-1) for r_r, r_s in zip(ret_r, ret_s, strict=True)]
+        elif args.use_customize_rewards and args.critic_num_heads == 1:
+            rw = args.reasonable_reward_weight
+            sw = 1 - rw
+
+            rewards_r = [r[:, 0] for r in rewards]
+            rewards_s = [r[:, 1] for r in rewards]
+            assert values[0].ndim == 1
+            weighted_rewards = [rw * rr + sw * rs for rr, rs in zip(rewards_r, rewards_s, strict=True)]
+            advantages, returns = get_advantages_and_returns_batch(
+                total_lengths, response_lengths, values, weighted_rewards, args.gamma, args.lambd,
+                loss_masks_list=loss_masks,
+            )
+        else:
+            advantages, returns = get_advantages_and_returns_batch(
+                total_lengths, response_lengths, values, rewards, args.gamma, args.lambd,
+                loss_masks_list=loss_masks,
+            )
 
     elif args.advantage_estimator == "reinforce_plus_plus":
         rewards = torch.tensor(rewards, dtype=torch.float32, device=kl[0].device)
@@ -679,61 +799,8 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
             student_log_probs=log_probs,
         )
 
-    # TODO: OpenRLHF always does advantages normalization but veRL doesn't seem to do it.
     if args.normalize_advantages:
-        all_advs = torch.cat(advantages)
-        cp_size = mpu.get_context_parallel_world_size()
-        if cp_size == 1:
-            all_masks = torch.cat(loss_masks)
-        else:
-            mask_chunks = []
-            for i in range(len(advantages)):
-                total_len = total_lengths[i]
-                response_len = response_lengths[i]
-                prompt_len = total_len - response_len
-                max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
-
-                _, _, _, token_offsets = get_logits_and_tokens_offset_with_cp(
-                    total_len, response_len, args.qkv_format, max_seq_len
-                )
-
-                # Convert global offsets to response-space offsets
-                s0, e0 = token_offsets[0]
-                s1, e1 = token_offsets[1]
-                res_s0, res_e0 = max(0, s0 - prompt_len), max(0, e0 - prompt_len)
-                res_s1, res_e1 = max(0, s1 - prompt_len), max(0, e1 - prompt_len)
-
-                local_mask_parts = []
-                full_mask = loss_masks[i]
-                if res_e0 > res_s0:
-                    local_mask_parts.append(full_mask[res_s0:res_e0])
-                if res_e1 > res_s1:
-                    local_mask_parts.append(full_mask[res_s1:res_e1])
-
-                # Concatenate the parts to form the final mask chunk for this rank and this sequence
-                local_mask_chunk = (
-                    torch.cat(local_mask_parts)
-                    if local_mask_parts
-                    else torch.tensor([], device=all_advs.device, dtype=full_mask.dtype)
-                )
-                mask_chunks.append(local_mask_chunk)
-
-            all_masks = torch.cat(mask_chunks)
-
-        if all_masks.numel() > 0:
-            assert (
-                all_advs.size() == all_masks.size()
-            ), f"Shape mismatch before whitening: advantages {all_advs.size()}, masks {all_masks.size()}"
-            dp_group = mpu.get_data_parallel_group()
-
-            whitened_advs_flat = distributed_masked_whiten(
-                all_advs,
-                all_masks,
-                process_group=dp_group,
-                shift_mean=True,
-            )
-            chunk_lengths = [chunk.size(0) for chunk in advantages]
-            advantages = list(torch.split(whitened_advs_flat, chunk_lengths))
+        advantages = _normalize_advantages(args, advantages, loss_masks, total_lengths, response_lengths, max_seq_lens)
 
     rollout_data["advantages"] = advantages
     rollout_data["returns"] = returns
@@ -1046,7 +1113,12 @@ def value_loss_function(
         response_lengths=batch["response_lengths"],
         max_seq_lens=batch.get("max_seq_lens", None),
     )
-    values = torch.cat([value.flatten() for value in values["values"]], dim=0)
+
+    multi_head = old_values.dim() == 2 and old_values.size(-1) > 1
+    if multi_head:
+        values = torch.cat(values["values"], dim=0)  # [total_R, num_heads]
+    else:
+        values = torch.cat([value.flatten() for value in values["values"]], dim=0)
 
     returns = torch.cat(batch["returns"], dim=0)
 
@@ -1055,6 +1127,10 @@ def value_loss_function(
     surr1 = (values_clipped - returns) ** 2
     surr2 = (values - returns) ** 2
     loss = torch.max(surr1, surr2)
+
+    if multi_head:
+        loss = loss.sum(dim=-1)
+        values_clipfrac = values_clipfrac.any(dim=-1)
 
     loss = sum_of_sample_mean(loss)
     values_clipfrac = sum_of_sample_mean(values_clipfrac.float())

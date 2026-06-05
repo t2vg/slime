@@ -747,6 +747,15 @@ class RolloutManager:
         if samples[0].teacher_log_probs is not None:
             train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
 
+        if samples[0].token_rewards is not None:
+            train_data["token_rewards"] = [sample.token_rewards for sample in samples]
+
+        if samples[0].customized_metrics:
+            for key in samples[0].customized_metrics:
+                train_data[f"customized_metrics/{key}"] = [
+                    sample.customized_metrics.get(key, 0.0) for sample in samples
+                ]
+
         return train_data
 
     def set_train_parallel_config(self, config: dict):
@@ -786,6 +795,7 @@ class RolloutManager:
                 "rollout_routed_experts",
                 "prompt",
                 "teacher_log_probs",
+                "token_rewards",
             ]:
                 if key not in data:
                     continue
@@ -799,6 +809,9 @@ class RolloutManager:
                 if key not in data:
                     continue
                 rollout_data[key] = data[key]
+            for key in data:
+                if key.startswith("customized_metrics/"):
+                    rollout_data[key] = data[key]
             # Pass dynamic global_batch_size to training side
             if hasattr(self, "_dynamic_global_batch_size"):
                 rollout_data["dynamic_global_batch_size"] = self._dynamic_global_batch_size
