@@ -33,4 +33,4 @@ max_staleness: 2
 
 penalize_invalid_tool_args: true
 
-invalid_tool_args_penalty: -0.2
+invalid_tool_args_penalty: 0

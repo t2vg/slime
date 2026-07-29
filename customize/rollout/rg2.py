@@ -296,6 +296,7 @@ async def calculate_turn_reward(
     if len(baseline_action_spans) != len(action_spans):
         with open(f"/data/gongrui/slime_tmp/mismatch_{uuid.uuid4()}.json", "w") as f:
             json.dump({
+                "raw_tokens": sample.tokens,
                 "rebuild_tokens": rebuild_tokens,
                 "think_spans": think_spans,
                 "action_spans": action_spans,

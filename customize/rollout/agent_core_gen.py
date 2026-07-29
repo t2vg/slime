@@ -17,7 +17,7 @@ set_error_info_depth(1)
 
 logger = logging.getLogger(__name__)
 
-set_sqlite_path("/tmp/xiaolong/agent_core_session.sqlite")
+set_sqlite_path("/tmp/gongrui/agent_core_session.sqlite")
 
 
 async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, Any], evaluation: bool = False) -> Sample:

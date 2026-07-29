@@ -29,8 +29,14 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
-    tokenizer = get_processor(args.tokenizer_path, model_type="qwen3")
-    template = get_template(tokenizer, template_type="qwen3_thinking")
+    if "3.5" in args.tokenizer_path:
+        model_type = "qwen3_5"
+        template_type = "qwen3_5"
+    else:
+        model_type = "qwen3"
+        template_type = "qwen3_thinking"
+    tokenizer = get_processor(args.tokenizer_path, model_type=model_type)
+    template = get_template(tokenizer, template_type=template_type)
     template.set_mode("train")
     logger.info("Loaded tokenizer from %s, agent_template: %s", args.tokenizer_path, template._agent_template)
     uvicorn.run(app, host=args.host, port=args.port)
