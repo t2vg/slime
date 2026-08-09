@@ -6,7 +6,7 @@ cd sglang
 #checkout to branch "dev"
 git checkout slime_0.5.9
 uv pip install -e "python"
-wget https://github.com/TideDra/sglang/releases/download/slime_0.5.7/sglang_router-0.3.0-cp38-abi3-manylinux_2_39_x86_64.whl
+wget https://github.com/TideDra/sglang/releases/download/slime_0.5.9/sglang_router-0.3.0-cp38-abi3-manylinux_2_34_x86_64.whl
 uv pip install sglang_router-0.3.0-cp38-abi3-manylinux_2_39_x86_64.whl
 cd ..
 
